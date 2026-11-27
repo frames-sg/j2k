@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[cfg(all(feature = "metal-runner", target_os = "macos"))]
-use j2k::encode_j2k_lossless_with_accelerator;
 use j2k::{
     encode_j2k_lossless, encode_j2k_lossless_components, encode_j2k_lossless_typed_components,
     encode_j2k_lossless_with_roi_regions, encode_j2k_lossy, extract_j2k_codestream_payload,
@@ -15,9 +13,9 @@ use j2k::{
     feature = "cuda-runner",
     all(feature = "metal-runner", target_os = "macos")
 ))]
-use j2k::{encode_j2k_lossy_with_accelerator, BackendKind};
+use j2k::{encode_j2k_lossless_with_accelerator, encode_j2k_lossy_with_accelerator, BackendKind};
 #[cfg(feature = "cuda-runner")]
-use j2k_cuda::{CudaEncodeStageAccelerator, CudaLosslessEncoder};
+use j2k_cuda::CudaEncodeStageAccelerator;
 #[cfg(all(feature = "metal-runner", target_os = "macos"))]
 use j2k_metal::MetalEncodeStageAccelerator;
 
@@ -65,7 +63,7 @@ pub(super) fn encode_cpu_case(
 
 #[cfg(feature = "cuda-runner")]
 pub(super) fn encode_cuda_case(
-    lossless_encoder: &mut CudaLosslessEncoder,
+    lossless_accelerator: &mut CudaEncodeStageAccelerator,
     case: &EncoderCase,
     input: &GeneratedInput,
 ) -> Result<EncodedOutput, String> {
@@ -74,12 +72,23 @@ pub(super) fn encode_cuda_case(
     }
     match case.mode {
         EncoderMode::Lossless => {
+            // This lane tests the CUDA adapter IUT itself, so it offers every
+            // case to the device stages. The public `Auto` policy of
+            // `CudaLosslessEncoder` keeps a case on the CPU until its CUDA
+            // route is measured faster.
             let samples = interleaved_lossless_samples(case, input)?;
             let options = lossless_options(case, EncodeBackendPreference::Auto);
-            let encoded = lossless_encoder
-                .encode(samples, &options)
-                .map_err(|error| error.to_string())?
-                .into_encoded();
+            let encoded = encode_j2k_lossless_with_accelerator(
+                samples,
+                &options,
+                BackendKind::Cuda,
+                lossless_accelerator,
+            )
+            .map_err(|error| {
+                // A failed encode can leave device state uncertain; start clean.
+                *lossless_accelerator = CudaEncodeStageAccelerator::default();
+                error.to_string()
+            })?;
             Ok(EncodedOutput {
                 codestream: encoded.codestream,
                 reference_input: None,

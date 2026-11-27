@@ -1134,6 +1134,7 @@ impl j2k_core::scratch::ScratchPool for j2k_tilecodec::NoPool
 impl j2k_core::scratch::ScratchPool for j2k_tilecodec::ZstdPool
 impl j2k_core::traits::TileDecompress for j2k_tilecodec::DeflateCodec
 impl j2k_core::traits::TileDecompress for j2k_tilecodec::LzwCodec
+impl j2k_core::traits::TileDecompress for j2k_tilecodec::PackBitsCodec
 impl j2k_core::traits::TileDecompress for j2k_tilecodec::UncompressedCodec
 impl j2k_core::traits::TileDecompress for j2k_tilecodec::ZstdCodec
 pub fn j2k_tilecodec::DeflateCodec::decompress_into(&mut Self::Pool, &[u8], &mut [u8]) -> core::result::Result<usize, Self::Error>
@@ -1146,6 +1147,8 @@ pub fn j2k_tilecodec::LzwPool::bytes_allocated(&self) -> usize
 pub fn j2k_tilecodec::LzwPool::reset(&mut self)
 pub fn j2k_tilecodec::NoPool::bytes_allocated(&self) -> usize
 pub fn j2k_tilecodec::NoPool::reset(&mut self)
+pub fn j2k_tilecodec::PackBitsCodec::decompress_into(&mut Self::Pool, &[u8], &mut [u8]) -> core::result::Result<usize, Self::Error>
+pub fn j2k_tilecodec::PackBitsCodec::expected_size(&[u8]) -> core::result::Result<core::option::Option<usize>, Self::Error>
 pub fn j2k_tilecodec::UncompressedCodec::decompress_into(&mut Self::Pool, &[u8], &mut [u8]) -> core::result::Result<usize, Self::Error>
 pub fn j2k_tilecodec::UncompressedCodec::expected_size(&[u8]) -> core::result::Result<core::option::Option<usize>, Self::Error>
 pub fn j2k_tilecodec::ZstdCodec::decompress_into(&mut Self::Pool, &[u8], &mut [u8]) -> core::result::Result<usize, Self::Error>
@@ -1156,6 +1159,8 @@ pub type j2k_tilecodec::DeflateCodec::Error = j2k_tilecodec::TileCodecError
 pub type j2k_tilecodec::DeflateCodec::Pool = j2k_tilecodec::DeflatePool
 pub type j2k_tilecodec::LzwCodec::Error = j2k_tilecodec::TileCodecError
 pub type j2k_tilecodec::LzwCodec::Pool = j2k_tilecodec::LzwPool
+pub type j2k_tilecodec::PackBitsCodec::Error = j2k_tilecodec::TileCodecError
+pub type j2k_tilecodec::PackBitsCodec::Pool = j2k_tilecodec::NoPool
 pub type j2k_tilecodec::UncompressedCodec::Error = j2k_tilecodec::TileCodecError
 pub type j2k_tilecodec::UncompressedCodec::Pool = j2k_tilecodec::NoPool
 pub type j2k_tilecodec::ZstdCodec::Error = j2k_tilecodec::TileCodecError
@@ -4674,6 +4679,11 @@ pub struct j2k_cuda_transcode_engine::CudaTranscodeReversible53Bands
 ```
 
 ## `j2k-mpsgraph-support`
+
+```text
+```
+
+## `j2k-jpegls`
 
 ```text
 ```

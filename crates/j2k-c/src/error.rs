@@ -6,10 +6,12 @@
 
 use crate::abi::{
     J2kCError, J2K_ALLOCATION_FAILED, J2K_BUFFER_TOO_SMALL, J2K_CANCELLED, J2K_DECODE_FAILED,
-    J2K_ENCODE_FAILED, J2K_INTERNAL_ERROR, J2K_INVALID_ARGUMENT, J2K_INVALID_INPUT, J2K_PANIC,
-    J2K_RESOURCE_LIMIT, J2K_UNSUPPORTED,
+    J2K_ENCODE_FAILED, J2K_INCOMPLETE, J2K_INTERNAL_ERROR, J2K_INVALID_ARGUMENT, J2K_INVALID_INPUT,
+    J2K_PANIC, J2K_RESOURCE_LIMIT, J2K_UNSUPPORTED,
 };
 use j2k::{BatchInfrastructureError, BatchItemError, BufferError, CodecError, J2kError};
+use j2k_jpegls::{JpegLsEncodeError, JpegLsError};
+use j2k_tilecodec::TileCodecError;
 use std::borrow::Cow;
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
@@ -43,6 +45,7 @@ impl Error {
     pub(crate) fn codec(error: &J2kError) -> Self {
         let code = match error {
             J2kError::Cancelled => J2K_CANCELLED,
+            J2kError::IncompleteCodestream => J2K_INCOMPLETE,
             J2kError::Buffer(
                 BufferError::AllocationTooLarge { .. } | BufferError::SizeOverflow { .. },
             )
@@ -63,6 +66,56 @@ impl Error {
             _ if error.is_truncated() => J2K_INVALID_INPUT,
             J2kError::NativeDecode { .. } | J2kError::Backend(_) => J2K_DECODE_FAILED,
             _ => J2K_INVALID_INPUT,
+        };
+        Self::new(code, error.to_string())
+    }
+
+    pub(crate) fn jpegls(error: &JpegLsError) -> Self {
+        let code = match error {
+            JpegLsError::Unsupported(_) => J2K_UNSUPPORTED,
+            JpegLsError::OutputLimitExceeded { .. } => J2K_RESOURCE_LIMIT,
+            JpegLsError::OutputBufferTooSmall { .. } => J2K_BUFFER_TOO_SMALL,
+            JpegLsError::InvalidStride { .. } => J2K_INVALID_ARGUMENT,
+            JpegLsError::AllocationFailed { .. } => J2K_ALLOCATION_FAILED,
+            _ => J2K_INVALID_INPUT,
+        };
+        Self::new(code, error.to_string())
+    }
+
+    pub(crate) fn jpegls_encode(error: &JpegLsEncodeError) -> Self {
+        let code = match error {
+            JpegLsEncodeError::EmptyDimensions
+            | JpegLsEncodeError::DimensionsTooLarge { .. }
+            | JpegLsEncodeError::NoComponents
+            | JpegLsEncodeError::InvalidBitDepth { .. }
+            | JpegLsEncodeError::SampleLength { .. }
+            | JpegLsEncodeError::SampleOutOfRange { .. }
+            | JpegLsEncodeError::InvalidNear { .. }
+            | JpegLsEncodeError::InvalidInterleave { .. }
+            | JpegLsEncodeError::InvalidPresetParameters { .. }
+            | JpegLsEncodeError::InvalidRestartInterval => J2K_INVALID_ARGUMENT,
+            JpegLsEncodeError::AllocationFailed { .. } => J2K_ALLOCATION_FAILED,
+            // Validation failures, and failures this version does not know.
+            _ => J2K_ENCODE_FAILED,
+        };
+        Self::new(code, error.to_string())
+    }
+
+    /// A DICOM RLE failure. `fallback` classifies errors this version does
+    /// not know: invalid input when decoding, an encode failure when encoding.
+    pub(crate) fn tile_codec(error: &TileCodecError, fallback: u32) -> Self {
+        let code = match error {
+            TileCodecError::Buffer(
+                BufferError::AllocationTooLarge { .. } | BufferError::SizeOverflow { .. },
+            ) => J2K_RESOURCE_LIMIT,
+            TileCodecError::Buffer(BufferError::HostAllocationFailed { .. }) => {
+                J2K_ALLOCATION_FAILED
+            }
+            TileCodecError::Buffer(BufferError::OutputTooSmall { .. }) => J2K_BUFFER_TOO_SMALL,
+            TileCodecError::LengthMismatch { .. } => J2K_INVALID_ARGUMENT,
+            TileCodecError::Unsupported(_) => J2K_UNSUPPORTED,
+            TileCodecError::Input(_) | TileCodecError::Malformed { .. } => J2K_INVALID_INPUT,
+            _ => fallback,
         };
         Self::new(code, error.to_string())
     }

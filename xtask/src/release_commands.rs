@@ -27,6 +27,7 @@ const CPU_RELEASE_PACKAGES: &[&str] = &[
     "j2k-core",
     "j2k-codec-math",
     "j2k-jpeg",
+    "j2k-jpegls",
     "j2k-types",
     "j2k-native",
     "j2k",
@@ -360,6 +361,12 @@ fn validate_publish_workflow_source(
         "CARGO_UNSTABLE_PUBLISH_TIMEOUT: \"true\"",
         "CARGO_PUBLISH_TIMEOUT: \"600\"",
         "toolchain: nightly-",
+        "uses: ./.github/workflows/c-packages.yml",
+        "needs: [preflight, c-packages]",
+        "needs: [c-packages, publish]",
+        "python3 scripts/c_release_assets.py verify --tag \"${RELEASE_TAG}\"",
+        "gh release create \"${RELEASE_TAG}\"",
+        "--draft --verify-tag",
     ] {
         if !workflow_source.contains(required) {
             errors.push(format!(
@@ -409,10 +416,12 @@ fn validate_publish_workflow_source(
                 .ok_or_else(|| format!("{} job names must be strings", workflow_path.display()))
         })
         .collect::<Result<BTreeSet<_>, _>>()?;
-    let expected_jobs = BTreeSet::from(["preflight".to_string(), "publish".to_string()]);
+    let expected_jobs = BTreeSet::from(
+        ["preflight", "c-packages", "publish", "c-release-assets"].map(ToString::to_string),
+    );
     if actual_jobs != expected_jobs {
         errors.push(format!(
-            "{} must contain exactly preflight and publish jobs; found {actual_jobs:?}",
+            "{} must contain exactly the preflight, c-packages, publish and c-release-assets jobs; found {actual_jobs:?}",
             workflow_path.display()
         ));
     }
@@ -527,7 +536,7 @@ fn validate_release_docs(
     manifest: &ReleaseManifestContract,
     errors: &mut Vec<String>,
 ) -> Result<(), String> {
-    let release_doc_path = Path::new("xtask/RELEASING.md");
+    let release_doc_path = Path::new("contributor-book/releasing.md");
     let release_doc = fs::read_to_string(release_doc_path)
         .map_err(|err| format!("failed to read {}: {err}", release_doc_path.display()))?;
     let packages = manifest.ordered_crates().collect::<Vec<_>>();
@@ -540,7 +549,7 @@ fn validate_release_docs_source(
     publishable_packages: &[&str],
     errors: &mut Vec<String>,
 ) {
-    let release_doc_path = Path::new("xtask/RELEASING.md");
+    let release_doc_path = Path::new("contributor-book/releasing.md");
     for package in publishable_packages {
         if !release_doc.contains(&format!("`{package}`")) {
             errors.push(format!(

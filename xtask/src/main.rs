@@ -150,7 +150,7 @@ fn print_help() {
     println!(
         "usage: cargo xtask <task>\n\n\
          tasks:\n\
-          ci            fmt, clippy, panic-surface, test, docs, and unsafe-audit\n\
+          ci            fmt, codec-math-codegen, clippy, panic-surface, test, docs, and unsafe-audit\n\
            fmt           check rustfmt\n\
            clippy        run clippy with warnings denied\n\
            clippy-strict run stricter J2K clippy gates\n\
@@ -183,7 +183,7 @@ fn print_help() {
            x86-codegen-audit check baseline x86-64 j2k-native and j2k for scalar libm calls and out-of-line AVX2 operations\n\
            repo-lint     run repository policy checks owned by xtask\n\
            t803          fetch, run, or verify pinned T.803 v3 conformance evidence\n\
-           release-integrity validate offline release metadata; --publish requires final dated/signoff state\n\
+           release-integrity validate offline release metadata; --publish also requires changelog entries and patch sign-off\n\
            release-status verify one frozen SHA's scoped T.803 evidence [--sha SHA] [--repository owner/name] [--scope cpu|cuda|metal|all]\n\
            release-cpu   run release-mode CPU codec tests\n\
            release-cuda  run fail-closed CUDA validation on Linux x86_64 [--mode quick|full]\n\

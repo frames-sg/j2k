@@ -7,7 +7,8 @@ use j2k_core::BackendKind;
 
 use super::CudaEncodeStageAccelerator;
 
-/// Reason an `Auto` lossless encode completed on the CPU.
+/// Reason an `Auto` lossless encode that was offered to CUDA completed on the
+/// CPU.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum CudaEncodeFallbackReason {
@@ -17,11 +18,23 @@ pub enum CudaEncodeFallbackReason {
     DeviceRouteIncomplete,
 }
 
+/// Whether `Auto` offers a host-input lossless encode to CUDA: only for a
+/// shape whose CUDA route was measured faster than the CPU.
+fn auto_uses_cuda(samples: J2kLosslessSamples<'_>) -> bool {
+    crate::generated::promotion::auto_host_output_encode_qualifies(
+        samples.components,
+        samples.width,
+        samples.height,
+    )
+}
+
 /// Opaque result from [`CudaLosslessEncoder`].
 ///
 /// The requested backend is retained separately from the backend that actually
-/// satisfied the request. A CPU result is a fallback only when the request used
-/// [`EncodeBackendPreference::Auto`].
+/// satisfied the request. A CPU result is a fallback only when an
+/// [`EncodeBackendPreference::Auto`] request was offered to CUDA; when `Auto`
+/// keeps a shape on the CPU because no measured-faster CUDA route covers it,
+/// the CPU is the chosen route and no fallback is reported.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CudaLosslessEncodeResult {
     requested_backend: EncodeBackendPreference,
@@ -30,21 +43,18 @@ pub struct CudaLosslessEncodeResult {
 }
 
 impl CudaLosslessEncodeResult {
+    /// `device_unavailable` is `None` when the encode was not offered to CUDA.
     fn new(
         requested_backend: EncodeBackendPreference,
-        device_unavailable: bool,
+        device_unavailable: Option<bool>,
         encoded: EncodedJ2k,
     ) -> Self {
-        let fallback_reason = if requested_backend == EncodeBackendPreference::Auto
-            && encoded.backend == BackendKind::Cpu
-        {
-            Some(if device_unavailable {
-                CudaEncodeFallbackReason::DeviceUnavailable
-            } else {
-                CudaEncodeFallbackReason::DeviceRouteIncomplete
-            })
-        } else {
-            None
+        let fell_back = requested_backend == EncodeBackendPreference::Auto
+            && encoded.backend == BackendKind::Cpu;
+        let fallback_reason = match device_unavailable {
+            Some(true) if fell_back => Some(CudaEncodeFallbackReason::DeviceUnavailable),
+            Some(false) if fell_back => Some(CudaEncodeFallbackReason::DeviceRouteIncomplete),
+            _ => None,
         };
         Self {
             requested_backend,
@@ -65,7 +75,11 @@ impl CudaLosslessEncodeResult {
         self.encoded.backend
     }
 
-    /// Why an `Auto` request completed on the CPU, if it did.
+    /// Why an `Auto` request that was offered to CUDA completed on the CPU.
+    ///
+    /// `None` when CUDA completed the encode, when the request was not `Auto`,
+    /// and when `Auto` kept the encode on the CPU because no measured-faster
+    /// CUDA route covers its shape.
     #[must_use]
     pub const fn fallback_reason(&self) -> Option<CudaEncodeFallbackReason> {
         self.fallback_reason
@@ -95,8 +109,12 @@ impl CudaLosslessEncodeResult {
 /// [`Self::encode`] honors each job's [`EncodeBackendPreference`]:
 ///
 /// - `CpuOnly` does not initialize or submit CUDA work.
-/// - `Auto` may use CUDA stages and returns a CPU result when CUDA is unavailable
-///   or the device route does not cover every required stage.
+/// - `Auto` uses CUDA only for a shape whose CUDA route was measured faster
+///   than the CPU, as listed in the routing evidence. No encode shape is
+///   listed today, so `Auto` encodes on the CPU and reports no fallback. For
+///   a listed shape it returns a CPU result, with a
+///   [`CudaEncodeFallbackReason`], when CUDA is unavailable or does not cover
+///   every required stage.
 /// - `RequireDevice` returns an error unless CUDA satisfies every required stage.
 ///
 /// `Auto` does not retry on the CPU after a CUDA execution error. Such errors
@@ -169,23 +187,42 @@ impl CudaLosslessEncoder {
         samples: J2kLosslessSamples<'_>,
         options: J2kLosslessEncodeOptions,
     ) -> Result<CudaLosslessEncodeResult, crate::Error> {
+        let offer_device = match options.backend {
+            EncodeBackendPreference::CpuOnly => false,
+            EncodeBackendPreference::Auto => auto_uses_cuda(samples),
+            EncodeBackendPreference::RequireDevice => true,
+        };
+        self.encode_routed(samples, options, offer_device)
+    }
+
+    /// Encode one job whose routing decision is already made: `offer_device`
+    /// says whether CUDA is offered the encode.
+    pub(super) fn encode_routed(
+        &mut self,
+        samples: J2kLosslessSamples<'_>,
+        options: J2kLosslessEncodeOptions,
+        offer_device: bool,
+    ) -> Result<CudaLosslessEncodeResult, crate::Error> {
         self.accelerator.begin_encode_attempt();
         let requested_backend = options.backend;
-        let encoded = if requested_backend == EncodeBackendPreference::CpuOnly {
-            j2k::encode_j2k_lossless(samples, &options)
-        } else {
+        let encoded = if offer_device {
             j2k::encode_j2k_lossless_with_accelerator(
                 samples,
                 &options,
                 BackendKind::Cuda,
                 &mut self.accelerator,
             )
+        } else {
+            j2k::encode_j2k_lossless(
+                samples,
+                &options.with_backend(EncodeBackendPreference::CpuOnly),
+            )
         };
 
         match encoded {
             Ok(encoded) => Ok(CudaLosslessEncodeResult::new(
                 requested_backend,
-                self.accelerator.device_unavailable_observed(),
+                offer_device.then(|| self.accelerator.device_unavailable_observed()),
                 encoded,
             )),
             Err(error) => {

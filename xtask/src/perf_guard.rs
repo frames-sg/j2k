@@ -52,7 +52,7 @@ struct BenchManifestStanza {
     stanza: &'static str,
 }
 
-// This is the immutable ref recorded by docs/benchmark-evidence.md for the
+// This is the immutable ref recorded by contributor-book/benchmarks.md for the
 // current benchmark suite. The older `j2k-bench-original` tag predates the
 // current crate layout and cannot host the benchmark source overlay.
 const DEFAULT_BASELINE_REF: &str = "29143c8e1f00bbbe9cf5ab37b3cea882f6d52139";

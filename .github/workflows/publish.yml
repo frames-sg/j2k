@@ -97,9 +97,15 @@ jobs:
       - name: Package and checksum the complete release manifest
         run: python3 scripts/publish_release.py preflight
 
+  # Builds and tests the prebuilt C/C++ packages and records their checksum
+  # manifest before the environment approval. A manual dispatch stops here.
+  c-packages:
+    name: C packages
+    uses: ./.github/workflows/c-packages.yml
+
   publish:
     if: ${{ github.event_name == 'push' }}
-    needs: [preflight]
+    needs: [preflight, c-packages]
     runs-on: ubuntu-latest
     timeout-minutes: 120
     environment: crates-io-publish
@@ -119,3 +125,39 @@ jobs:
           CARGO_UNSTABLE_PUBLISH_TIMEOUT: "true"
           CARGO_PUBLISH_TIMEOUT: "600"
         run: python3 scripts/publish_release.py publish
+
+  # Runs only after the approved crates.io publish succeeds, and attaches the
+  # same C package files whose manifest digest c-packages recorded before it.
+  c-release-assets:
+    name: Attach C packages to a draft GitHub Release
+    if: ${{ github.event_name == 'push' }}
+    needs: [c-packages, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.c-packages.outputs.version }}
+      MANIFEST_SHA256: ${{ needs.c-packages.outputs.manifest-sha256 }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: j2k-c-${{ needs.c-packages.outputs.version }}-*
+          path: ${{ runner.temp }}/c-packages
+          merge-multiple: true
+      - name: Verify the C packages against the recorded checksum manifest
+        run: |
+          python3 scripts/c_release_assets.py verify --tag "${RELEASE_TAG}" --version "${VERSION}" \
+            --manifest-sha256 "${MANIFEST_SHA256}" --dir "${RUNNER_TEMP}/c-packages"
+      - name: Create the draft release with the C packages attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft --verify-tag \
+            --title "J2K ${VERSION}" --notes "" "${RUNNER_TEMP}"/c-packages/*

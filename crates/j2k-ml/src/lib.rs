@@ -8,12 +8,8 @@
 //! through host memory before an ordinary Burn upload. Casting and normalization
 //! stay in ordinary Burn tensor operations after decode.
 //!
-//! JPEG tensor output remains RGB uint8 by default, with grayscale expanded to
-//! three identical channels. Grayscale JPEG 2000 and HTJ2K remain one channel.
-//! Output metadata describes the returned tensor. A later explicit
-//! `channels="native"` option may preserve grayscale JPEG as one channel without
-//! changing existing defaults. Source component counts, when exposed, are per
-//! input row and remain aligned with `source_indices`.
+//! JPEG output is RGB `U8`, with grayscale expanded to three identical
+//! channels. Grayscale JPEG 2000 and HTJ2K stay one channel.
 
 #![deny(missing_docs)]
 

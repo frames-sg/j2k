@@ -93,8 +93,8 @@ inline std::vector<uint8_t> encode_lossless(const uint8_t *samples, size_t lengt
                                             const j2k_encode_options &options) {
     uint8_t *data = nullptr;
     size_t size = 0;
-    j2k_error detail{};
-    check(j2k_encode_lossless(samples, length, &options, &data, &size, &detail), detail);
+    j2k_error diagnostic{};
+    check(j2k_encode_lossless(samples, length, &options, &data, &size, &diagnostic), diagnostic);
     return detail::take_buffer(data, size);
 }
 
@@ -106,8 +106,60 @@ inline std::vector<uint8_t> encode(const uint8_t *samples, size_t length,
                                    j2k_encode_report *report = nullptr) {
     uint8_t *data = nullptr;
     size_t size = 0;
+    j2k_error diagnostic{};
+    check(j2k_encode(samples, length, &options, &params, &data, &size, report, &diagnostic), diagnostic);
+    return detail::take_buffer(data, size);
+}
+
+// JPEG-LS header metadata and decoded layout (see j2k_jpegls_inspect).
+inline j2k_jpegls_info jpegls_inspect(const uint8_t *input, size_t length) {
+    j2k_jpegls_info result = J2K_JPEGLS_INFO_INIT;
     j2k_error detail{};
-    check(j2k_encode(samples, length, &options, &params, &data, &size, report, &detail), detail);
+    check(j2k_jpegls_inspect(input, length, &result, &detail), detail);
+    return result;
+}
+
+// Decode JPEG-LS into tightly packed interleaved samples (see j2k_jpegls_decode).
+inline std::vector<uint8_t> jpegls_decode(const uint8_t *input, size_t length) {
+    const auto info = jpegls_inspect(input, length);
+    std::vector<uint8_t> result(static_cast<size_t>(info.buffer_bytes));
+    j2k_error detail{};
+    check(j2k_jpegls_decode(input, length, result.data(), result.size(),
+                            static_cast<size_t>(info.row_bytes), &detail), detail);
+    return result;
+}
+
+// Encode interleaved samples as JPEG-LS (see j2k_jpegls_encode).
+inline std::vector<uint8_t> jpegls_encode(const uint8_t *samples, size_t length,
+                                          const j2k_jpegls_encode_options &options) {
+    uint8_t *data = nullptr;
+    size_t size = 0;
+    j2k_error diagnostic{};
+    check(j2k_jpegls_encode(samples, length, &options, &data, &size, &diagnostic), diagnostic);
+    return detail::take_buffer(data, size);
+}
+
+// Decode one DICOM RLE frame into native samples (see j2k_rle_decode). report,
+// when given, receives what a J2K_RLE_LENIENT decode accepted.
+inline std::vector<uint8_t> rle_decode(const uint8_t *input, size_t length,
+                                       const j2k_rle_layout &layout,
+                                       j2k_rle_report *report = nullptr) {
+    const auto frame = static_cast<size_t>(layout.rows) * layout.columns *
+                       layout.samples_per_pixel * (layout.bits_allocated / 8);
+    std::vector<uint8_t> result(frame);
+    j2k_error detail{};
+    check(j2k_rle_decode(input, length, &layout, result.data(), result.size(), report,
+                         &detail), detail);
+    return result;
+}
+
+// Encode one frame of native samples as DICOM RLE (see j2k_rle_encode).
+inline std::vector<uint8_t> rle_encode(const uint8_t *samples, size_t length,
+                                       const j2k_rle_layout &layout) {
+    uint8_t *data = nullptr;
+    size_t size = 0;
+    j2k_error diagnostic{};
+    check(j2k_rle_encode(samples, length, &layout, &data, &size, &diagnostic), diagnostic);
     return detail::take_buffer(data, size);
 }
 
@@ -138,6 +190,14 @@ public:
         j2k_error detail{};
         const auto status = j2k_decoder_info(handle_, &result, &detail);
         check(status, detail);
+        return result;
+    }
+
+    // Which reductions of a J2K_OPEN_PARTIAL input decode exactly.
+    j2k_completeness completeness() {
+        j2k_completeness result = J2K_COMPLETENESS_INIT;
+        j2k_error detail{};
+        check(j2k_decoder_completeness(handle_, &result, &detail), detail);
         return result;
     }
 

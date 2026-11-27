@@ -1,47 +1,55 @@
-# J2K: JPEG 2000 and HTJ2K for Rust
+<div align="center">
+  <img src="docs/assets/favicon.svg" alt="The J2K logo" height="120"/>
+  <br /><br />
 
-[![crates.io](https://img.shields.io/crates/v/j2k.svg)](https://crates.io/crates/j2k)
-[![docs.rs](https://img.shields.io/docsrs/j2k)](https://docs.rs/j2k)
-[![Full validation](https://github.com/frames-sg/j2k/actions/workflows/full-validation.yml/badge.svg?branch=main&event=push)](https://github.com/frames-sg/j2k/actions/workflows/full-validation.yml?query=branch%3Amain+event%3Apush)
-[![downloads](https://img.shields.io/crates/d/j2k.svg)](https://crates.io/crates/j2k)
-[![license](https://img.shields.io/crates/l/j2k.svg)](#license)
+[![Rust 1.97 or later](https://img.shields.io/badge/Rust-1.97%2B-ff4d00?style=flat-square&logo=rust&logoColor=white)](https://crates.io/crates/j2k)
+[![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-ff4d00?style=flat-square)](#license)
+[![Current Crates.io Version](https://img.shields.io/crates/v/j2k.svg?style=flat-square&color=ff4d00)](https://crates.io/crates/j2k)
+[![Full validation](https://img.shields.io/github/actions/workflow/status/frames-sg/j2k/full-validation.yml?branch=main&label=CI&style=flat-square)](https://github.com/frames-sg/j2k/actions/workflows/full-validation.yml)
+[![Documentation](https://img.shields.io/badge/docs-latest-ff4d00?style=flat-square)](https://docs.rs/j2k)
 
-J2K reads and writes JPEG 2000 images. It is written in Rust, runs on the CPU
-on Linux, macOS, and Windows, and can use an NVIDIA GPU (CUDA) or an Apple GPU
-(Metal) for the workloads where that was measured to be faster.
+  <p><b>JPEG 2000 and HTJ2K for Rust, on the CPU, CUDA, and Metal.</b></p>
+</div>
 
-JPEG 2000 is the image format used in medical imaging (DICOM), digital
-pathology slide scans, satellite and aerial imagery, and archives. Its files
-are often very large and split into tiles. HTJ2K (High-Throughput JPEG 2000)
-is a newer version of the format with a much faster block coder. J2K handles
-both.
+---
+
+JPEG 2000 is the image format behind medical imaging (DICOM), digital pathology
+slide scans, satellite imagery, and archives. Its files are often huge and
+split into tiles, and the format was designed so you can pull a region or a
+lower resolution out of one without decoding the whole image. HTJ2K (High
+Throughput JPEG 2000, Part 15) keeps the format and swaps in a much faster
+block coder.
+
+J2K reads and writes both. The codecs are pure, safe Rust with no C libraries
+underneath. They run on the CPU on Linux, macOS, and Windows, and can hand the
+heavy work to an NVIDIA GPU (CUDA) or an Apple GPU (Metal). The same workspace
+also has a JPEG codec, a JPEG-to-HTJ2K transcoder, Python and C bindings, and a
+command-line tool.
+
+## Features
+
+- **Decode** whole images, regions, reduced resolutions, or single tiles.
+  Region and low-resolution decodes only do the work for the pixels you ask
+  for, so a thumbnail or viewport from a multi-gigabyte slide is cheap.
+- **Decode in batches** in parallel, with output grouped by shape and ready to
+  turn into NCHW or NHWC tensors.
+- **Encode** lossless or lossy JPEG 2000 and HTJ2K, to a quality, a file size,
+  a bit rate, or a target PSNR.
+- **Transcode** JPEG to HTJ2K from the DCT coefficients, and classic JPEG 2000
+  to HTJ2K losslessly, without going through pixels when the input allows it.
+- **Read and write** raw codestreams and JP2 and JPH files.
+- **Untrusted input is safe to decode.** Malformed files return errors, memory
+  use is capped, and the decoders are fuzzed in CI.
+
+J2K implements JPEG 2000 Part 1 and HTJ2K (Part 15). Part 2 (JPX) extensions
+are not supported. The [format support page](book/format-support.md) has the
+details.
+
+## Getting started
 
 ```bash
 cargo add j2k
 ```
-
-## What it does
-
-- **Decode** a whole image, one region, a lower-resolution version, or a
-  single tile. Region and low-resolution decodes skip the work for pixels
-  outside the request, so pulling a thumbnail or a viewport out of a
-  multi-gigabyte slide doesn't decode the whole image.
-- **Decode many images at once.** The batch API decodes in parallel and
-  returns results grouped by shape, ready to turn into tensors.
-- **Encode** lossless or lossy JPEG 2000 and HTJ2K. Lossy encode accepts a
-  1–100 quality setting (HTJ2K), a target file size, a bits-per-pixel
-  rate, or a target PSNR.
-- **Convert JPEG 2000 to lossless HTJ2K** with identical pixels. Reversible
-  5/3 grayscale and RGB images with unsigned 8- or 16-bit samples are re-coded
-  without decoding to pixels; other inputs are decoded and re-encoded
-  losslessly.
-- **Convert baseline JPEG to HTJ2K** from the JPEG's DCT coefficients, without
-  decoding to pixels (`j2k-transcode`).
-- **Read and write JP2 and JPH files** as well as raw codestreams.
-
-It does not support JPEG 2000 Part 2 (JPX) extensions.
-
-## Examples
 
 Decode a file to 8-bit RGB (or gray or RGBA, depending on the image):
 
@@ -56,8 +64,14 @@ let image = decoder.decode_srgb8()?;
 println!("{width}x{height}, {:?}, {} bytes", image.layout(), image.data().len());
 ```
 
-Decode a 1024 x 1024 area at quarter resolution without decoding the rest of
-the image:
+<details>
+<summary>
+Decode a region at reduced resolution
+</summary>
+<br />
+
+This decodes a 1024 x 1024 area at quarter resolution, without touching the
+rest of the image:
 
 ```rust
 use j2k::{J2kDecoder, J2kScratchPool, PixelFormat, Rect};
@@ -78,28 +92,17 @@ decoder.decode_region_scaled_pow2_into(
 )?;
 ```
 
-The plan reports the actual reduced rectangle, reference grid, packed sample
-interpretation and expected decode route, including images with nonzero origins.
-Use `plan.buffer_len(stride)` for padded output and `decoder.max_reduction_levels()`
-to query the common component/tile resolution ladder. Unavailable exact reductions
-and regions with no reduced samples are rejected explicitly.
+The plan tells you how big the output is before you allocate it. See
+[Decoding](book/decoding.md) for 16-bit and native-depth output, batches,
+memory limits, and cancellation.
 
-For explicit colour normalization, use `srgb8_region_decode_plan` and
-`decode_region_srgb8_at_reduction`. These reconstruct the requested native region
-before converting it to eight-bit sRGB with straight alpha. Native-component
-decoding keeps the original precision and interpretation.
+</details>
 
-The corresponding `*_with_control` methods accept `J2kDecodeControl` for a
-working-memory bound, packed-output limit, and cooperative cancellation token.
-These are operation limits, not process-memory limits. Repeated CPU requests can
-use `PreparedImageOperation` with `CpuBatchDecoder::decode_operations` to vary the
-region and exact reduction while sharing the owned source preparation. See
-[the supported combinations and limits](docs/public-support.md#region-planning).
-
-For 16-bit images, use `PixelFormat::Gray16` or `Rgb16`, or
-`decode_native_components()` to get each component at its original bit depth.
-
-Encode 8-bit RGB pixels as lossless HTJ2K:
+<details>
+<summary>
+Encode lossless HTJ2K
+</summary>
+<br />
 
 ```rust
 use j2k::{encode_j2k_lossless, J2kBlockCodingMode, J2kLosslessEncodeOptions, J2kLosslessSamples};
@@ -111,199 +114,148 @@ let encoded = encode_j2k_lossless(samples, &options)?;
 std::fs::write("image.j2c", &encoded.codestream)?;
 ```
 
-`encoded.codestream` is a raw codestream. Use `wrap_j2k_codestream` to put it
-in a `.jp2` or `.jph` file. By default the encoder decodes its own output and
-checks it against the input before returning.
+`encoded.codestream` is a raw codestream; `wrap_j2k_codestream` puts it in a
+JP2 or JPH file. By default the encoder decodes its own output and checks it
+against the input before returning. See [Encoding](book/encoding.md) for lossy
+encodes and rate targets.
 
-More runnable examples are in `crates/*/examples/`, for example
-`cargo run -p j2k --example decode_generated`.
+</details>
 
-## Command-line tool
+The [J2K Book](book/README.md) is the user guide. API documentation is on
+[docs.rs](https://docs.rs/j2k), and there are runnable examples in
+`crates/*/examples/` (try `cargo run -p j2k --example decode_generated`).
+
+## GPU backends
+
+|                                 | CPU | CUDA | Metal |
+| ------------------------------- | --- | ---- | ----- |
+| JPEG 2000 and HTJ2K decode      | ☑️  | ☑️   | ☑️    |
+| JPEG 2000 and HTJ2K encode      | ☑️  | ☑️   | ☑️    |
+| JPEG decode and encode          | ☑️  | ☑️   | ☑️    |
+| JPEG to HTJ2K transcode         | ☑️  | ☑️   | ☑️    |
+| Platforms                       | Linux, macOS, Windows | Linux, NVIDIA driver | macOS |
+
+The CPU still parses the file, and the GPU does the expensive parts: block
+decoding, the wavelet transform, colour conversion, and writing pixels.
+Decoded images can stay in GPU memory and go straight into a GPU pipeline.
+
+You pick a backend with `BackendRequest`. `Cuda`, `Metal`, and `Cpu` do what
+they say, and a GPU request that the GPU can't handle returns an error rather
+than quietly running on the CPU. `Auto`, the default, uses the GPU only for
+the image types and sizes where we measured it to be faster than the CPU with
+identical output, and the CPU for everything else.
+
+GPU support lives in separate crates, `j2k-cuda` and `j2k-metal`, so CPU-only
+users don't build any of it. [GPU decoding and encoding](book/gpu.md) covers
+setup and what runs where.
+
+<details>
+<summary>
+Machine learning pipelines 🧠
+</summary>
+<br />
+
+- **PyTorch and NumPy.** The [`j2k` Python package](crates/j2k-python/README.md)
+  decodes straight to tensors in the image's own sample type: single images,
+  batches that mix JPEG and JPEG 2000, regions, reduced resolutions, and
+  selected wavelet bands. Built with CUDA it decodes into PyTorch-owned device
+  memory; built with Metal it returns `mps` tensors.
+- **Burn.** [`j2k-ml`](book/machine-learning.md) decodes batches into Burn
+  tensors on the CPU, CUDA, or Metal.
+- **MPSGraph.** [`j2k-mpsgraph`](book/machine-learning.md) hands
+  Metal-resident batches to MPSGraph without a round trip through the CPU.
+- **Wavelet coefficients.** `J2kDecoder::decode_wavelets` returns the 5/3 or
+  9/7 coefficients for the bands you select, skipping the inverse transform.
+
+</details>
+
+## Crates
+
+Most projects only need `j2k`. Add a GPU crate if you want GPU decoding.
+
+| You want to                                    | Use                                                          |
+| ---------------------------------------------- | ------------------------------------------------------------ |
+| Read, write, or convert JPEG 2000 and HTJ2K    | `j2k`                                                        |
+| Decode and encode on an NVIDIA GPU             | `j2k` + `j2k-cuda`                                           |
+| Decode and encode on an Apple GPU              | `j2k` + `j2k-metal`                                          |
+| Read or write regular JPEG                     | `j2k-jpeg`, plus `j2k-jpeg-cuda` or `j2k-jpeg-metal` for GPUs |
+| Convert JPEG to HTJ2K                          | `j2k-transcode`, plus `j2k-transcode-cuda` or `j2k-transcode-metal` |
+| Feed decoded images to Burn or MPSGraph        | `j2k-ml`, `j2k-mpsgraph`                                     |
+| Decompress Deflate, Zstd, or LZW tiles (TIFF)  | `j2k-tilecodec`                                              |
+| Use J2K from Python, C, or C++                 | [`j2k` on PyPI](crates/j2k-python/README.md), [`j2k-c`](crates/j2k-c/README.md) |
+| Use J2K from the shell                         | [`j2k-cli`](crates/j2k-cli/README.md)                        |
+
+The other `j2k-*` crates are building blocks shared by the ones above. The
+[architecture chapter](contributor-book/architecture.md) shows how they fit
+together.
+
+<details>
+<summary>
+Command line and image servers 🖼️
+</summary>
+<br />
 
 ```bash
 cargo install j2k-cli
-j2k inspect image.jp2       # size, color space, bit depth, components, levels, tiles
+j2k inspect image.jp2                                      # size, colour, depth, tiles, levels
 j2k transcode input.jpg output.j2k --htj2k --lossless-53   # JPEG to HTJ2K
 j2k decode -i image.jp2 -d 0,0,1024,1024 -r 2 -o tile.png  # opj_decompress options
 ```
 
-`j2k decode` takes OpenJPEG `opj_decompress` options with the same meanings,
-and the binary run as `opj_decompress` (for example through a symlink) behaves
-as that tool, so image servers that call `opj_decompress` can run j2k. See
-[`crates/j2k-cli/README.md`](crates/j2k-cli/README.md) for the options and the
-differences. To encode images, use the library.
+`j2k decode` accepts OpenJPEG's `opj_decompress` options, and the binary
+behaves as `opj_decompress` when run under that name, so image servers such as
+Cantaloupe can use J2K without changes. [Serving IIIF images](book/iiif.md)
+walks through the setup.
 
-[`docs/iiif.md`](docs/iiif.md) shows how to serve IIIF Image API 3.0 requests
-and `info.json` with the Rust, C, Python and command-line interfaces, and how
-to run j2k behind Cantaloupe.
+</details>
 
-## C and C++
+## Correctness
 
-[`j2k-c`](crates/j2k-c/README.md) is a CPU C ABI (`j2k.h`), a header-only C++17
-wrapper (`j2k.hpp`), and a relocatable shared-library package with CMake
-configuration; Cargo also emits a static archive. It offers batch and explicit
-core whole-image decode routes, inspects images, keeps one decoder across
-codestreams and reports their compressed transfer syntax, and decodes full
-images, regions, and reduced resolutions into caller-owned buffers as native
-U8, U16, or I16 samples. It streams full images row by row without a
-whole-image buffer, and encodes losslessly. Build a package with
-`python3 crates/j2k-c/scripts/package.py --output dist/j2k-c`; consumers need
-only a C/C++ compiler and CMake.
+J2K passes the official JPEG 2000 conformance suite (ISO/IEC 15444-4, also
+published as ITU-T T.803) for every profile it supports: all 160 cases, 90 for
+classic JPEG 2000 and 70 for HTJ2K, on Linux, macOS, and Windows, and on the
+CUDA and Metal builds. [Conformance](book/conformance.md) has the details.
 
-## GPU support
-
-On the GPU, the CPU still reads the file's structure, and the GPU does the
-expensive parts: block decoding, the wavelet transform, color conversion, and
-writing out pixels. Decoded pixels can stay in GPU memory, so they can go
-straight into a GPU-side pipeline without a copy back to the CPU.
-
-You choose the backend with `BackendRequest`:
-
-- **`Auto`** (the default) uses the GPU only for image types and sizes where it
-  was measured to be faster than the CPU and to give identical output. Everything
-  else runs on the CPU. On the cited HTJ2K routing benchmark, `Auto` picks the GPU
-  for all 8 decode cells on CUDA and 3 of 8 on Metal. The 2 encode cells stay on
-  the CPU for both backends
-  ([results](docs/benchmark-evidence.md)).
-- **`Cuda`** or **`Metal`** forces the GPU. If the GPU path can't handle the
-  image, you get an error. J2K never retries on the CPU: an explicit GPU
-  request returns an error, and so does a GPU failure after `Auto` chose the
-  GPU.
-- **`Cpu`** never touches the GPU.
-
-GPU support lives in separate crates: `j2k-cuda` (Linux, needs an NVIDIA
-driver; enable the `cuda-runtime` feature) and `j2k-metal` (macOS). See their
-READMEs for which paths run on the GPU. Benchmark numbers are in
-[docs/benchmark-evidence.md](docs/benchmark-evidence.md).
-
-## Machine learning
-
-The optional [Rust-written PyTorch/NumPy extension](crates/j2k-python/README.md)
-exposes native pixel tensors, batches that can mix 8-bit JPEG with JPEG 2000
-inputs, reusable prepared batches, region/reduced decode, and selected wavelet
-bands. Its optional CUDA route decodes directly into PyTorch-owned device
-storage, and its optional Metal route returns PyTorch `mps` tensors on Apple
-Silicon. Python is only needed by users of that extension.
-
-Rust callers can use `J2kDecoder::decode_wavelets` to obtain exact reversible
-5/3 coefficients or dequantized 9/7 coefficients, with tile/component metadata.
-The decoder skips entropy work for unrequested bands and omits inverse DWT.
-
-`j2k-ml` adapts JPEG, JPEG 2000, and HTJ2K batches to [Burn](https://burn.dev)
-tensors (`U8`, `U16`, or `I16`, NCHW or NHWC).
-`CpuBurnDecoder::decode_batch` accepts either codec family or mixed inputs and
-returns a common `BurnBatchDecode` with homogeneous tensor groups, source
-indices, and codec-tagged errors. A GPU Burn destination uploads the
-CPU-decoded pixels normally.
-
-For JPEG 2000 and HTJ2K, `CudaDirectBurnDecoder` decodes directly into
-Burn-owned CUDA storage and waits for completion and status validation before
-returning the tensors. `CudaUploadBurnDecoder` and `MetalUploadBurnDecoder`
-decode on the GPU, copy decoded pixels to host memory, and upload them through
-Burn. See [docs/j2k-ml.md](docs/j2k-ml.md).
-
-`j2k-mpsgraph` is an experimental Apple Silicon adapter for JPEG 2000 and
-HTJ2K. It wraps completed Metal batches as `MPSGraphTensorData` or queues
-decode and graph execution on one Metal command queue, without decoded-pixel
-host readback. See [docs/j2k-mpsgraph.md](docs/j2k-mpsgraph.md).
-
-## Which crate do I need?
-
-Most code only needs `j2k`. Add a GPU crate if you want GPU decoding.
-
-| You want to | Use |
-| --- | --- |
-| Read, write, or convert JPEG 2000 / HTJ2K | `j2k` |
-| Decode with an NVIDIA GPU | `j2k` + `j2k-cuda` |
-| Decode with an Apple GPU | `j2k` + `j2k-metal` |
-| Read or write regular JPEG | `j2k-jpeg` |
-| Decode batches of JPEGs into dense RGB8 tensors | `j2k_jpeg::JpegBatchDecoder` |
-| Convert JPEG to HTJ2K | `j2k-transcode` (+ `j2k-transcode-cuda` or `j2k-transcode-metal`) |
-| JPEG on the GPU | `j2k-jpeg-cuda` or `j2k-jpeg-metal` |
-| Feed decoded images to Burn | `j2k-ml` |
-| Feed decoded images to MPSGraph | `j2k-mpsgraph` |
-| Feed pixels or wavelet bands to PyTorch/NumPy | Optional `j2k-python` extension (`j2k`) |
-| Extract selected wavelet coefficients in Rust | `j2k::J2kDecoder::decode_wavelets` |
-| Decompress Deflate, Zstd, or LZW tiles (as in TIFF) | `j2k-tilecodec` |
-| A command-line tool | `j2k-cli` |
-| Decode from C or C++ | `j2k-c` (C ABI, C++17 wrapper, CMake package) |
-
-The remaining `j2k-*` crates are shared building blocks used by the crates
-above. [docs/architecture.md](docs/architecture.md) shows how they fit
-together, and [docs/stable-api-1.0.md](docs/stable-api-1.0.md) lists which
-crates are stable.
-
-## Correctness and safety
-
-**Conformance.** JPEG 2000 has an official test suite (ISO/IEC 15444-4, also
-published as ITU-T T.803). The CPU decoder passes all 160 test cases for the
-profiles J2K supports (90 for classic JPEG 2000 and 70 for HTJ2K) on macOS,
-Linux, and Windows. The CUDA and Metal builds pass the same 160; in those runs
-81 cases use the GPU for some stages and 79 run on the CPU. These results
-are for release 0.14.0; details and the exact profiles are in
-[docs/t803-conformance.md](docs/t803-conformance.md).
-
-**Safety.** The public API is safe Rust and is built to take untrusted files:
-malformed input returns an error, memory use is capped, and the decoders are
-fuzzed in CI. `unsafe` code is used only for FFI and GPU calls, SIMD, and a few
-allocation and buffer helpers. Every host-side `unsafe` block in the published
-crates explains why it is sound, and Clippy rejects one that doesn't.
-
-**Copying instead of re-encoding.** If you're moving JPEG 2000 data between
-containers (DICOM to TIFF, for example) and the destination expects the same
-image format, copy the compressed bytes instead of decoding and re-encoding.
-`J2kView::passthrough_candidate` describes the compressed data (format, size,
-components, bit depth) so you can check it against what the destination
-expects.
+The public API is safe Rust. `unsafe` is limited to FFI and GPU calls, SIMD,
+and a few buffer helpers, and every host-side `unsafe` block says why it is
+sound.
 
 ## How it compares
 
-| | Language | GPU | License |
-| --- | --- | --- | --- |
-| **J2K** | Rust | CUDA and Metal | MIT / Apache-2.0 |
-| [OpenJPEG](https://github.com/uclouvain/openjpeg) | C | none | BSD-2-Clause |
-| [Grok](https://github.com/GrokImageCompression/grok) | C++ | optional closed-source CUDA/Metal plugin | AGPL-3.0 |
-| [Kakadu](https://kakadusoftware.com) | C++ | none | commercial |
-| [OpenJPH](https://github.com/aous72/OpenJPH) | C++ | none | BSD-2-Clause |
-| NVIDIA nvJPEG2000 | C | CUDA only | proprietary |
+|                                                      | Language | GPU                         | License          |
+| ---------------------------------------------------- | -------- | --------------------------- | ---------------- |
+| **J2K**                                              | Rust     | CUDA and Metal              | MIT / Apache-2.0 |
+| [OpenJPEG](https://github.com/uclouvain/openjpeg)    | C        | none                        | BSD-2-Clause     |
+| [Grok](https://github.com/GrokImageCompression/grok) | C++      | closed-source plugin        | AGPL-3.0         |
+| [Kakadu](https://kakadusoftware.com)                 | C++      | none                        | commercial       |
+| [OpenJPH](https://github.com/aous72/OpenJPH)         | C++      | none                        | BSD-2-Clause     |
+| NVIDIA nvJPEG2000                                    | C        | CUDA only                   | proprietary      |
 
-J2K does not depend on any of them.
+J2K doesn't depend on any of them. Speed comparisons are in
+[Performance](book/performance.md).
 
 ## Status
 
-**Release status:** `0.14.0` is published and security-supported. See the
-[changelog](CHANGELOG.md) for migration notes.
+J2K is pre-1.0. `j2k`, `j2k-core`, `j2k-jpeg`, and `j2k-tilecodec` are stable:
+we don't break them in patch releases, and breaking changes in minor releases
+come with migration notes. The GPU, transcode, and machine learning crates are
+experimental and change more often. See [API stability](book/stability.md).
 
-`j2k`, `j2k-core`, `j2k-jpeg`, and `j2k-tilecodec` are the stable crates.
-The GPU, transcode, and ML crates are experimental: patch releases don't
-break them, but a `0.x` minor release can (every break is listed with
-migration notes). See [docs/stable-api-1.0.md](docs/stable-api-1.0.md).
+Release notes are on [GitHub Releases](https://github.com/frames-sg/j2k/releases),
+and upcoming changes are in the [changelog](CHANGELOG.md). More about the
+project is on [frames-sg.com](https://frames-sg.com/j2k/rust-jpeg2000-codec/).
 
-The minimum supported Rust version is 1.97. CI checks the whole workspace
-with Rust 1.97 and builds and tests everything with Rust 1.99.0.
+## Contributing
 
-## Documentation
-
-- [API docs on docs.rs](https://docs.rs/j2k)
-- [Project website](https://frames-sg.com/j2k/rust-jpeg2000-codec/)
-- [Rust JPEG codec](https://frames-sg.com/rust-jpeg-codec/)
-- [JPEG-to-HTJ2K transcoding](https://frames-sg.com/jpeg-to-htj2k-transcoding/)
-- [GPU image decoding for AI pipelines](https://frames-sg.com/gpu-image-decoding-ai/)
-- [docs/public-support.md](docs/public-support.md): every supported and
-  unsupported feature of the format
-- [docs/architecture.md](docs/architecture.md): how the crates fit together
-- [docs/benchmark-evidence.md](docs/benchmark-evidence.md): GPU and CPU
-  benchmark results
-- [docs/env-vars.md](docs/env-vars.md): `J2K_*` environment variables
-- [CHANGELOG.md](CHANGELOG.md): release notes
-- [CONTRIBUTING.md](CONTRIBUTING.md): building, testing, benchmarking, and
-  releasing
-
-## Security
-
-Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
+Read the [contributing guidelines](CONTRIBUTING.md) and the
+[code of conduct](CODE_OF_CONDUCT.md) first. The
+[contributor book](contributor-book/README.md) covers the architecture,
+testing, benchmarks, and releases. Report security issues as described in
+[SECURITY.md](SECURITY.md).
 
 ## License
 
-Dual-licensed under either [MIT](LICENSE-MIT) or
-[Apache-2.0](LICENSE-APACHE), at your option.
+J2K is distributed under the terms of either the [MIT License](LICENSE-MIT) or
+the [Apache License, Version 2.0](LICENSE-APACHE), at your option. Third-party
+code and data that J2K includes or derives from are listed in
+[NOTICES.md](NOTICES.md).

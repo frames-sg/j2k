@@ -1,0 +1,28 @@
+[package]
+name        = "j2k-jpegls"
+description = "Pure-Rust JPEG-LS (ITU-T T.87) inspect, decode, and lossless and near-lossless encode for j2k"
+version.workspace = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace = true
+homepage.workspace     = true
+keywords               = ["jpeg-ls", "jpegls", "dicom", "lossless", "image"]
+categories.workspace   = true
+readme                 = "README.md"
+# Tests read fixtures that stay in the repository.
+include = ["Cargo.toml", "README.md", "src/**"]
+
+[package.metadata.docs.rs]
+all-features = true
+targets = []
+
+[lib]
+name = "j2k_jpegls"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -25,6 +25,7 @@ struct Manifest {
     schema_version: u32,
     sources: Vec<EvidenceSource>,
     cuda_decode: Vec<DecodeCell>,
+    cuda_host_output: Vec<HostOutputCell>,
     metal_decode: Vec<DecodeCell>,
     metal_host_output: Vec<HostOutputCell>,
     metal_lossy_rgb8: PixelThreshold,
@@ -79,9 +80,7 @@ pub(crate) fn promotion_codegen(mut args: impl Iterator<Item = String>) -> Resul
     if let Some(other) = args.next() {
         return Err(format!("unknown promotion-codegen argument `{other}`"));
     }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| "xtask manifest has no repository parent".to_string())?;
+    let root = repo_root();
     let manifest_path = root.join("xtask/routing-promotion-evidence.json");
     let source = fs::read_to_string(&manifest_path)
         .map_err(|error| format!("read {}: {error}", manifest_path.display()))?;
@@ -89,23 +88,43 @@ pub(crate) fn promotion_codegen(mut args: impl Iterator<Item = String>) -> Resul
         .map_err(|error| format!("parse {}: {error}", manifest_path.display()))?;
     validate(&manifest)?;
     let outputs = render(&manifest)?;
+    if check {
+        return match stale_output(root, &outputs)? {
+            None => Ok(()),
+            Some(relative) => Err(format!(
+                "generated promotion table is stale: {}; run `cargo xtask promotion-codegen`",
+                root.join(relative).display()
+            )),
+        };
+    }
     for (relative, expected) in outputs {
         let path = root.join(relative);
-        if check {
-            let actual = fs::read_to_string(&path)
-                .map_err(|error| format!("read generated output {}: {error}", path.display()))?;
-            if actual != expected {
-                return Err(format!(
-                    "generated promotion table is stale: {}; run `cargo xtask promotion-codegen`",
-                    path.display()
-                ));
-            }
-        } else {
-            fs::write(&path, expected)
-                .map_err(|error| format!("write generated output {}: {error}", path.display()))?;
-        }
+        fs::write(&path, expected)
+            .map_err(|error| format!("write generated output {}: {error}", path.display()))?;
     }
     Ok(())
+}
+
+fn repo_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask sits in the repository root")
+}
+
+/// The first generated table under `root` that differs from `outputs`.
+fn stale_output(
+    root: &Path,
+    outputs: &[(&'static str, String)],
+) -> Result<Option<&'static str>, String> {
+    for (relative, expected) in outputs {
+        let path = root.join(relative);
+        let actual = fs::read_to_string(&path)
+            .map_err(|error| format!("read generated output {}: {error}", path.display()))?;
+        if actual != *expected {
+            return Ok(Some(relative));
+        }
+    }
+    Ok(None)
 }
 
 fn validate(manifest: &Manifest) -> Result<(), String> {
@@ -142,20 +161,30 @@ fn validate(manifest: &Manifest) -> Result<(), String> {
     }
     validate_decode_cells("cuda", &manifest.cuda_decode, &sources)?;
     validate_decode_cells("metal", &manifest.metal_decode, &sources)?;
-    let mut host_identities = BTreeSet::new();
-    for cell in &manifest.metal_host_output {
-        require_source(&sources, &cell.source, "metal")?;
-        if cell.width == 0 || cell.height == 0 || !matches!(cell.source_components, 1 | 3) {
-            return Err("invalid Metal host-output promotion cell".to_string());
-        }
-        let identity = (cell.source_components, cell.width, cell.height);
-        if !host_identities.insert(identity) {
-            return Err("duplicate Metal host-output workload identity".to_string());
-        }
-    }
+    validate_host_output_cells("cuda", &manifest.cuda_host_output, &sources)?;
+    validate_host_output_cells("metal", &manifest.metal_host_output, &sources)?;
     require_source(&sources, &manifest.metal_lossy_rgb8.source, "metal")?;
     if manifest.metal_lossy_rgb8.minimum_pixels == 0 {
         return Err("Metal lossy RGB8 threshold must be nonzero".to_string());
+    }
+    Ok(())
+}
+
+fn validate_host_output_cells(
+    backend: &str,
+    cells: &[HostOutputCell],
+    sources: &BTreeMap<&str, &EvidenceSource>,
+) -> Result<(), String> {
+    let mut identities = BTreeSet::new();
+    for cell in cells {
+        require_source(sources, &cell.source, backend)?;
+        if cell.width == 0 || cell.height == 0 || !matches!(cell.source_components, 1 | 3) {
+            return Err(format!("invalid {backend} host-output promotion cell"));
+        }
+        let identity = (cell.source_components, cell.width, cell.height);
+        if !identities.insert(identity) {
+            return Err(format!("duplicate {backend} host-output workload identity"));
+        }
     }
     Ok(())
 }
@@ -240,20 +269,20 @@ fn render_cuda(manifest: &Manifest) -> Result<String, String> {
     for cell in &manifest.cuda_decode {
         render_cuda_cell(&mut out, cell)?;
     }
-    out.push_str("];\n");
+    out.push_str("];\n\n");
+    render_host_output_cells(&mut out, &manifest.cuda_host_output);
+    out.push_str("\n/// Whether `Auto` sends a host-output lossless encode of this shape to CUDA.\npub(crate) fn auto_host_output_encode_qualifies(components: u16, width: u32, height: u32) -> bool {\n    HOST_OUTPUT_CELLS.iter().any(|cell| {\n        cell.0 == components\n            && cell.1 == width\n            && cell.2 == height\n            && SOURCE_EVIDENCE.contains(&cell.3)\n    })\n}\n");
     Ok(out)
 }
 
-fn render_metal(manifest: &Manifest) -> Result<String, String> {
-    let mut out = String::from(generated_header());
-    out.push_str("#[cfg(any(test, target_os = \"macos\"))]\nuse j2k_core::{CompressedPayloadKind as Payload, CompressedTransferSyntax as Syntax, PixelFormat};\n\n#[cfg(any(test, target_os = \"macos\"))]\nuse crate::routing::promotion::{PromotionCell, PromotionOperation as Operation};\n\n");
-    render_sources(&mut out, manifest, "metal");
-    out.push_str("\n#[cfg(any(test, target_os = \"macos\"))]\nconst fn decode_cell(\n    format: PixelFormat,\n    transfer_syntax: Syntax,\n    payload_kind: Payload,\n    operation: Operation,\n    boundary: (u32, u32, u64, usize),\n    source_evidence: &'static str,\n) -> PromotionCell {\n    PromotionCell {\n        format,\n        transfer_syntax,\n        payload_kind,\n        operation,\n        minimum_width: boundary.0,\n        minimum_height: boundary.1,\n        minimum_pixels: boundary.2,\n        minimum_count: boundary.3,\n        source_evidence,\n    }\n}\n\n#[cfg(any(test, target_os = \"macos\"))]\npub(crate) const PROMOTION_CELLS: &[PromotionCell] = &[\n");
-    for cell in &manifest.metal_decode {
-        render_metal_cell(&mut out, cell)?;
+/// Render `HOST_OUTPUT_CELLS` as rustfmt formats it, empty or not.
+fn render_host_output_cells(out: &mut String, cells: &[HostOutputCell]) {
+    if cells.is_empty() {
+        out.push_str("const HOST_OUTPUT_CELLS: &[(u16, u32, u32, &str)] = &[];\n");
+        return;
     }
-    out.push_str("];\n\n#[cfg(target_os = \"macos\")]\nconst HOST_OUTPUT_CELLS: &[(u16, u32, u32, &str)] = &[\n");
-    for cell in &manifest.metal_host_output {
+    out.push_str("const HOST_OUTPUT_CELLS: &[(u16, u32, u32, &str)] = &[\n");
+    for cell in cells {
         writeln!(
             out,
             "    ({}, {}, {}, {}),",
@@ -264,7 +293,20 @@ fn render_metal(manifest: &Manifest) -> Result<String, String> {
         )
         .expect("writing to a String cannot fail");
     }
-    out.push_str("];\n\n#[cfg(target_os = \"macos\")]\npub(crate) fn auto_host_output_encode_qualifies(components: u16, width: u32, height: u32) -> bool {\n    HOST_OUTPUT_CELLS.iter().any(|cell| {\n        cell.0 == components\n            && cell.1 == width\n            && cell.2 == height\n            && SOURCE_EVIDENCE.contains(&cell.3)\n    })\n}\n\npub(crate) fn auto_lossy_rgb8_encode_qualifies(pixels: usize) -> bool {\n");
+    out.push_str("];\n");
+}
+
+fn render_metal(manifest: &Manifest) -> Result<String, String> {
+    let mut out = String::from(generated_header());
+    out.push_str("#[cfg(any(test, target_os = \"macos\"))]\nuse j2k_core::{CompressedPayloadKind as Payload, CompressedTransferSyntax as Syntax, PixelFormat};\n\n#[cfg(any(test, target_os = \"macos\"))]\nuse crate::routing::promotion::{PromotionCell, PromotionOperation as Operation};\n\n");
+    render_sources(&mut out, manifest, "metal");
+    out.push_str("\n#[cfg(any(test, target_os = \"macos\"))]\nconst fn decode_cell(\n    format: PixelFormat,\n    transfer_syntax: Syntax,\n    payload_kind: Payload,\n    operation: Operation,\n    boundary: (u32, u32, u64, usize),\n    source_evidence: &'static str,\n) -> PromotionCell {\n    PromotionCell {\n        format,\n        transfer_syntax,\n        payload_kind,\n        operation,\n        minimum_width: boundary.0,\n        minimum_height: boundary.1,\n        minimum_pixels: boundary.2,\n        minimum_count: boundary.3,\n        source_evidence,\n    }\n}\n\n#[cfg(any(test, target_os = \"macos\"))]\npub(crate) const PROMOTION_CELLS: &[PromotionCell] = &[\n");
+    for cell in &manifest.metal_decode {
+        render_metal_cell(&mut out, cell)?;
+    }
+    out.push_str("];\n\n#[cfg(target_os = \"macos\")]\n");
+    render_host_output_cells(&mut out, &manifest.metal_host_output);
+    out.push_str("\n#[cfg(target_os = \"macos\")]\npub(crate) fn auto_host_output_encode_qualifies(components: u16, width: u32, height: u32) -> bool {\n    HOST_OUTPUT_CELLS.iter().any(|cell| {\n        cell.0 == components\n            && cell.1 == width\n            && cell.2 == height\n            && SOURCE_EVIDENCE.contains(&cell.3)\n    })\n}\n\npub(crate) fn auto_lossy_rgb8_encode_qualifies(pixels: usize) -> bool {\n");
     write!(
         out,
         "    pixels >= {} && SOURCE_EVIDENCE.contains(&{})\n}}\n",
@@ -417,6 +459,69 @@ mod tests {
             render(&manifest).expect("first render"),
             render(&manifest).expect("second render")
         );
+    }
+
+    #[test]
+    fn checked_in_routing_tables_match_the_manifest() {
+        let outputs = render(&manifest()).expect("render routing tables");
+
+        assert_eq!(stale_output(repo_root(), &outputs), Ok(None));
+    }
+
+    #[test]
+    fn a_table_that_differs_from_the_manifest_is_reported_stale() {
+        let mut outputs = render(&manifest()).expect("render routing tables");
+        outputs[0].1.push_str("// drift\n");
+
+        assert_eq!(stale_output(repo_root(), &outputs), Ok(Some(outputs[0].0)));
+    }
+
+    fn cuda_output(manifest: &Manifest) -> String {
+        render(manifest)
+            .expect("render routing tables")
+            .into_iter()
+            .find(|(path, _)| path.contains("j2k-cuda"))
+            .expect("CUDA routing table")
+            .1
+    }
+
+    #[test]
+    fn cuda_table_has_no_encode_cell_until_one_is_measured() {
+        let manifest = manifest();
+
+        assert!(manifest.cuda_host_output.is_empty());
+        assert!(cuda_output(&manifest)
+            .contains("const HOST_OUTPUT_CELLS: &[(u16, u32, u32, &str)] = &[];\n"));
+    }
+
+    #[test]
+    fn a_measured_cuda_encode_cell_is_rendered_into_the_cuda_table() {
+        let mut manifest = manifest();
+        manifest.cuda_host_output.push(HostOutputCell {
+            source: "cuda_part15".to_string(),
+            source_components: 3,
+            width: 2048,
+            height: 2048,
+        });
+        validate(&manifest).expect("a CUDA cell citing CUDA evidence is valid");
+
+        let output = cuda_output(&manifest);
+
+        assert!(output.contains("    (3, 2048, 2048, CUDA_PART15),\n"));
+        assert!(output.contains("pub(crate) fn auto_host_output_encode_qualifies("));
+    }
+
+    #[test]
+    fn a_cuda_encode_cell_must_cite_cuda_evidence() {
+        let mut manifest = manifest();
+        manifest.cuda_host_output.push(HostOutputCell {
+            source: "metal_host_output".to_string(),
+            source_components: 3,
+            width: 2048,
+            height: 2048,
+        });
+
+        assert!(validate(&manifest).is_err());
     }
 
     #[test]

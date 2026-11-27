@@ -1,6 +1,6 @@
 [package]
 name        = "j2k-tilecodec"
-description = "Tile-oriented decompression codecs for image containers"
+description = "Deflate, Zstd, LZW, and PackBits tile decompression for TIFF-style image containers, and DICOM RLE Lossless decode and encode"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

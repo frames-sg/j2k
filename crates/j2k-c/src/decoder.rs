@@ -6,13 +6,13 @@
 
 use crate::{
     abi::{
-        J2kCColorInfo, J2kCComponentInfo, J2kCDecodeOptions, J2kCImageInfo, J2kCOpenOptions,
-        J2kCOutputInfo, J2K_ALLOCATION_FAILED, J2K_ALPHA_NONE, J2K_ALPHA_PREMULTIPLIED,
-        J2K_ALPHA_STRAIGHT, J2K_BUFFER_TOO_SMALL, J2K_COLOR_ENUMERATED, J2K_COLOR_ICC,
-        J2K_COLOR_NONE, J2K_COLOR_UNKNOWN, J2K_I16_LE, J2K_INVALID_INPUT, J2K_OPEN_FLAGS,
-        J2K_OPEN_LENIENT, J2K_SYNTAX_HT_JPEG2000_LOSSLESS, J2K_SYNTAX_HT_JPEG2000_LOSSY,
-        J2K_SYNTAX_JPEG2000_LOSSLESS, J2K_SYNTAX_JPEG2000_LOSSY, J2K_SYNTAX_OTHER, J2K_U16_LE,
-        J2K_U8, J2K_UNSUPPORTED, J2K_WARNING_LENIENT_RECOVERY,
+        J2kCColorInfo, J2kCCompleteness, J2kCComponentInfo, J2kCDecodeOptions, J2kCImageInfo,
+        J2kCOpenOptions, J2kCOutputInfo, J2K_ALLOCATION_FAILED, J2K_ALPHA_NONE,
+        J2K_ALPHA_PREMULTIPLIED, J2K_ALPHA_STRAIGHT, J2K_BUFFER_TOO_SMALL, J2K_COLOR_ENUMERATED,
+        J2K_COLOR_ICC, J2K_COLOR_NONE, J2K_COLOR_UNKNOWN, J2K_I16_LE, J2K_INVALID_INPUT,
+        J2K_OPEN_FLAGS, J2K_OPEN_LENIENT, J2K_OPEN_PARTIAL, J2K_SYNTAX_HT_JPEG2000_LOSSLESS,
+        J2K_SYNTAX_HT_JPEG2000_LOSSY, J2K_SYNTAX_JPEG2000_LOSSLESS, J2K_SYNTAX_JPEG2000_LOSSY,
+        J2K_SYNTAX_OTHER, J2K_U16_LE, J2K_U8, J2K_UNSUPPORTED, J2K_WARNING_LENIENT_RECOVERY,
     },
     error::{Error, Result},
 };
@@ -78,9 +78,16 @@ impl Decoder {
             DecodeSettings::strict()
         } else {
             DecodeSettings::lenient()
-        };
+        }
+        .with_partial_codestream(options.flags & J2K_OPEN_PARTIAL != 0);
         let support = J2kDecoder::inspect_support_with_settings(input, settings)?;
-        let grid = J2kDecoder::inspect_reference_grid(input)?;
+        let grid = if settings.is_partial_codestream() {
+            // The container may be cut off inside its codestream box, which
+            // only the decoder's own parse reads.
+            j2k::J2kView::parse_with_settings(input, settings)?.reference_grid()
+        } else {
+            J2kDecoder::inspect_reference_grid(input)?
+        };
         let pool = match options.workers {
             0 => None,
             threads => Some(
@@ -340,6 +347,22 @@ impl Decoder {
             tile_height: self.grid.tile_size.1,
             ..Default::default()
         }
+    }
+
+    /// Which reductions of the input decode exactly; see
+    /// [`J2kDecoder::codestream_completeness`].
+    pub(crate) fn completeness(&self) -> Result<J2kCCompleteness> {
+        let mut decoder = J2kDecoder::new_with_settings(&self.bytes, self.settings)?;
+        let report = match self.pool.as_ref() {
+            Some(pool) => pool.install(|| decoder.codestream_completeness()),
+            None => decoder.codestream_completeness(),
+        }?;
+        Ok(J2kCCompleteness {
+            complete: report.is_complete().into(),
+            has_exact_reduction: report.min_exact_reduction().is_some().into(),
+            min_exact_reduction: report.min_exact_reduction().map_or(0, u32::from),
+            ..Default::default()
+        })
     }
 
     /// The colour specification decoding applies: the file's first COLR box.

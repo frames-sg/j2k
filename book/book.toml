@@ -1,0 +1,12 @@
+[book]
+title = "The J2K Book"
+description = "Reading and writing JPEG 2000 and HTJ2K with J2K"
+language = "en"
+src = "."
+
+[build]
+build-dir = "../target/book"
+
+[output.html]
+git-repository-url = "https://github.com/frames-sg/j2k"
+edit-url-template = "https://github.com/frames-sg/j2k/edit/main/book/{path}"

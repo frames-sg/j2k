@@ -35,7 +35,7 @@ fn missing_release_contract_files_fail_with_path_context() {
         let expected = match case.as_str() {
             "workflow" => ".github/workflows/publish.yml",
             "script" => "scripts/publish-crate.sh",
-            "docs" => "xtask/RELEASING.md",
+            "docs" => "contributor-book/releasing.md",
             "changelog" => "CHANGELOG.md",
             "provenance" => "PATCH_PROVENANCE.md",
             _ => unreachable!("validated case"),
@@ -60,7 +60,7 @@ fn missing_release_contract_files_fail_with_path_context() {
             .expect("write path-patch manifest fixture");
             std::fs::write(
                 release_root.join("CHANGELOG.md"),
-                "# Changelog\n\n## [0.7.0] - 2026-07-12\n",
+                "# Changelog\n\n## Unreleased\n\n- Release notes.\n",
             )
             .expect("write final changelog fixture");
         }

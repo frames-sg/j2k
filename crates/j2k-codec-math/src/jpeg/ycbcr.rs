@@ -1,10 +1,10 @@
 //!
-//! The YCbCr to RGB constants are libjpeg-turbo's, which every decoder
-//! backend applies. The full-range RGB to YCbCr transform below is the one
-//! every baseline encoder backend applies: the CPU encoder calls these
-//! functions, the CUDA-Oxide encode kernel calls them on the device, and the
-//! Metal encode shaders read the constants from a fragment that
-//! `j2k-jpeg-metal`'s build script renders.
+//! Every decoder backend applies the YCbCr to RGB constants here, which give
+//! the same output as libjpeg-turbo. The full-range RGB to YCbCr transform
+//! below is the one every baseline encoder backend applies: the CPU encoder
+//! calls these functions, the CUDA-Oxide encode kernel calls them on the
+//! device, and the Metal encode shaders read the constants from a fragment
+//! that `j2k-jpeg-metal`'s build script renders.
 //!
 //! The forward weights are the T.871 coefficients rounded to `2^-16`. Each row
 //! is exact on the neutral axis: the Y weights sum to `2^16` and each chroma

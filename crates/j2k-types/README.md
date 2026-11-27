@@ -1,21 +1,22 @@
-# j2k-types
+# J2K Types
 
-Encode-stage types and helpers shared by the J2K crates.
+> Encode-stage and decode-plan types shared by the [J2K](https://github.com/frames-sg/j2k) crates
 
-The `j2k` crate, the `j2k-native` engine, and the GPU adapters all use these
-types. The crate defines encode-stage jobs, outputs, and dispatch reports,
-progression-order encoding, and packet descriptor sorting, plus the
-encode-stage accelerator trait and its default CPU-only implementation.
+[![Current Crates.io Version](https://img.shields.io/crates/v/j2k-types.svg)](https://crates.io/crates/j2k-types)
+[![Documentation](https://docs.rs/j2k-types/badge.svg)](https://docs.rs/j2k-types)
+[![license](https://shields.io/badge/license-MIT%2FApache--2.0-blue)](https://github.com/frames-sg/j2k#license)
 
-It also defines the direct and referenced decode plans that the GPU adapters
-run. Each `J2kDirectGrayscalePlan`, including the component plans of color and
-RGBA plans, records the source component's signedness in its `signed` field.
-The wavelet selection and result types returned by
-`J2kDecoder::decode_wavelets` (`WaveletSelection`, `WaveletImage`, and related
-types) are defined here and re-exported by `j2k` and `j2k-native`.
+This crate shares types between `j2k`, `j2k-native`, and the GPU crates; use
+[`j2k`](https://crates.io/crates/j2k) instead. `j2k` re-exports the ones
+applications need, such as the wavelet types returned by
+`J2kDecoder::decode_wavelets`. The rest are the jobs and dispatch reports of
+the encode-stage accelerator trait, and the decode plans the GPU crates run.
+It is `no_std`, has no dependencies, and contains no unsafe code.
 
-## Links
+<!-- j2k-crate-footer -->
 
-- API docs: <https://docs.rs/j2k-types>
-- Repository: <https://github.com/frames-sg/j2k>
-- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>
+---
+
+Part of [J2K](https://github.com/frames-sg/j2k), a JPEG 2000 and HTJ2K codec
+for Rust. See the [J2K Book](https://github.com/frames-sg/j2k/tree/main/book)
+and the [API documentation](https://docs.rs/j2k).

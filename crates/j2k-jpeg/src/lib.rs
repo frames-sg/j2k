@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! JPEG decoder optimized for whole-slide images.
+//! JPEG inspect, decode, and encode.
 //!
-//! See the top-level README for project positioning. The primary entry point
-//! is [`Decoder`] — start with [`Decoder::inspect`] for header-only parsing.
+//! The primary decode entry point is [`Decoder`]; start with
+//! [`Decoder::inspect`] for header-only parsing. The crate also has baseline,
+//! 12-bit extended, and lossless encoders, ICC profile helpers, and a dense
+//! batch decoder.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(unreachable_pub)]

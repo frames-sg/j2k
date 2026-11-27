@@ -12,7 +12,7 @@ images and pure-Rust JPEG 2000 encoding.
 The crate can decode raw JPEG 2000 codestreams (`.j2c`) and still-image JP2/JPH
 wrappers. It implements the JPEG 2000 core coding system (ISO/IEC 15444-1) and
 HTJ2K block coding (ISO/IEC 15444-15) through the support boundary documented in
-`docs/public-support.md`. The remaining declared gaps are tracked there.
+`book/format-support.md`. The remaining declared gaps are tracked there.
 
 The crate offers both a high-level 8-bit decode path for general image use and
 a native-bit-depth decode path for integrations such as DICOM, plus encoder APIs
@@ -38,12 +38,12 @@ let bitmap = image.decode().unwrap();
 
 # Testing
 What this crate supports, and the tests behind each entry, are listed in
-`docs/public-support.md`. ITU-T T.803 conformance results are in
-`docs/t803-conformance.md`.
+`book/format-support.md`. ITU-T T.803 conformance results are in
+`book/conformance.md`.
 
 # Performance
 Benchmark commands, results, and the machines they ran on are in
-`docs/benchmark-evidence.md`.
+`book/performance.md`.
 
 # Safety
 Unsafe code is forbidden in this crate via a crate-level attribute. Its

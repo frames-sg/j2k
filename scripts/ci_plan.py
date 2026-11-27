@@ -34,10 +34,13 @@ METAL_ROOTS = frozenset(
 SHARED_GPU_PACKAGES = frozenset({"j2k-ml"})
 # The C/C++ API (j2k-c) builds a native package and runs C and C++ consumers against it.
 C_API_ROOTS = frozenset({"j2k-c"})
-DOCUMENTATION_PREFIXES = ("docs/",)
+DOCUMENTATION_PREFIXES = ("book/", "contributor-book/", "docs/")
 DOCUMENTATION_PATHS = frozenset(
     {
+        ".github/pull_request_template.md",
+        "AGENTS.md",
         "CHANGELOG.md",
+        "CLAUDE.md",
         "CODE_OF_CONDUCT.md",
         "CONTRIBUTING.md",
         "LICENSE",
@@ -48,6 +51,12 @@ DOCUMENTATION_PATHS = frozenset(
         "SECURITY.md",
     }
 )
+# Markdown beside code is documentation too: crate READMEs, fixture notes, and
+# the xtask guides. It is checked by the documentation job, not by GPU lanes.
+MARKDOWN_DOCUMENTATION_PREFIXES = ("corpus/", "crates/", "xtask/")
+# Markdown that Rust compiles in (`src/`) or that release verification reads
+# is not documentation.
+MARKDOWN_CODE_PREFIXES = ("xtask/release-evidence/",)
 QUALITY_EVIDENCE_PREFIXES = (
     "xtask/api/stable-api-",
     "xtask/release-evidence/public-api/",
@@ -238,7 +247,14 @@ def _package_for_path(path: str, package_roots: Mapping[str, str]) -> str | None
 
 
 def _is_documentation(path: str) -> bool:
-    return path in DOCUMENTATION_PATHS or path.startswith(DOCUMENTATION_PREFIXES)
+    if path in DOCUMENTATION_PATHS or path.startswith(DOCUMENTATION_PREFIXES):
+        return True
+    return (
+        path.endswith(".md")
+        and path.startswith(MARKDOWN_DOCUMENTATION_PREFIXES)
+        and not path.startswith(MARKDOWN_CODE_PREFIXES)
+        and "src" not in PurePosixPath(path).parts
+    )
 
 
 def _is_quality_evidence(path: str) -> bool:

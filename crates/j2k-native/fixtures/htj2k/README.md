@@ -1,4 +1,6 @@
-HTJ2K fixtures for native decoder coverage.
+# HTJ2K fixtures
+
+HTJ2K fixtures for the native decoder tests.
 
 The OpenHTJ2K fixtures are copied from OpenHTJ2K commit
 `ffe5acf9f1eedb87c36c3fd2134fdc1ddea5e75f`. They are tiny HTONLY codestreams
@@ -12,8 +14,8 @@ blocks, 2 non-empty refinement jobs, and up to 3 HT coding passes.
 `d4f2031359c32eb24825d00dde05a92cf3ae451e`. The native decoder sees 14 HT
 code blocks, all with non-empty refinement jobs, and up to 3 HT coding passes.
 
-It is intentionally checked-in test data: tests must not invoke an external
-encoder or decoder at runtime.
+Tests read these checked-in files; they never run an external encoder or
+decoder.
 
 The paired `.gray` file contains the expected 8-bit grayscale samples in
 row-major order from decoding the checked-in codestream with OpenJPH.
@@ -40,7 +42,7 @@ ae47e7be0f46df81c1da8a59e06ef76ec310992254344ffc27c62fc58d800b16  rgb_u12_53.j2c
 88653085de44d28bd02f19e8a245d9d7c000be33ce33d6cce5087818933ac15b  rgb_u12_53.oracle.raw
 ```
 
-The canonical source/oracle generator and full reproduction commands remain in
+The source and oracle generator and the full reproduction commands are in
 `crates/j2k-test-support/fixtures/htj2k/openjph_batch/` in the repository. The
-OpenJPH BSD 2-Clause license is retained here in `LICENSE.OpenJPH` so packaged
-native tests keep their fixture provenance and license material together.
+OpenJPH BSD 2-Clause license is also kept here, in `LICENSE.OpenJPH`, so the
+packaged native tests carry their fixtures' provenance and license together.

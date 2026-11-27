@@ -61,7 +61,7 @@
             <a class="button primary" href="https://crates.io/crates/j2k">j2k crate</a>
             <a class="button" href="https://crates.io/crates/j2k-transcode">j2k-transcode</a>
           </div>
-          <p class="note"><strong>Release status:</strong> See the <a href="https://github.com/frames-sg/j2k/blob/main/CHANGELOG.md">changelog</a> and <a href="https://crates.io/crates/j2k">crates.io</a> for the current published version.</p>
+          <p class="note"><strong>Release status:</strong> See <a href="https://github.com/frames-sg/j2k/releases">GitHub Releases</a> and <a href="https://crates.io/crates/j2k">crates.io</a> for the current version.</p>
         </div>
         <img class="diagram" src="../assets/j2k-gpu-pipeline.svg?v=4" alt="HTJ2K Rust codec and transcode pipeline">
       </div>
@@ -75,7 +75,7 @@
         </article>
         <article class="card">
           <h2>Recode</h2>
-          <p>Classic JPEG 2000 inputs use coefficient-domain recode where valid, and a pixel-preserving fallback for signed, high-bit, lossy, sampled, or otherwise incompatible coefficient-domain cases.</p>
+          <p>Reversible 5/3 gray and RGB inputs with unsigned 8- or 16-bit samples are recoded in the coefficient domain. Other inputs (signed, other bit depths, lossy, or palette-mapped) are decoded and re-encoded losslessly, with identical pixels.</p>
         </article>
         <article class="card">
           <h2>Transcode</h2>

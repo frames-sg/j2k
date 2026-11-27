@@ -175,10 +175,15 @@ impl CudaEncodeStageAccelerator {
         }
     }
 
-    /// Create the measured Auto route for host-output HTJ2K encode.
+    /// Create the hybrid host-output HTJ2K encode route that the routing
+    /// benchmark measures against the CPU.
     ///
     /// CUDA keeps the DWT and HT code-block stages, while forward RCT and
     /// Tier-2 packetization stay on the CPU for the current host-pixel path.
+    /// Passing this accelerator to an encode runs those stages on CUDA
+    /// whatever the shape. The routing runs measured it slower than the CPU,
+    /// so [`CudaLosslessEncoder`](crate::CudaLosslessEncoder) under `Auto`
+    /// does not use it until the routing evidence lists a shape.
     #[must_use]
     pub fn for_auto_host_output() -> Self {
         Self::default()

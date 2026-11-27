@@ -12,7 +12,7 @@ const METAL_CRATES: &[&str] = &[
 ];
 
 #[test]
-fn metal_crates_use_the_pinned_objc2_stack_without_legacy_metal_or_block() {
+fn metal_crates_use_the_objc2_stack_without_legacy_metal_or_block() {
     let root = repo_root();
     let workspace_source =
         fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");
@@ -25,19 +25,33 @@ fn metal_crates_use_the_pinned_objc2_stack_without_legacy_metal_or_block() {
         .expect("workspace dependencies");
 
     assert!(!dependencies.contains_key("metal"));
-    for (name, version) in [
-        ("objc2", "=0.6.4"),
-        ("objc2-foundation", "=0.3.2"),
-        ("objc2-metal", "=0.3.2"),
+    // objc2 types appear in the Metal crates' public API, so a new objc2 minor
+    // is a breaking change for them. Each requirement stays a caret range
+    // inside the minor line listed here: an exact pin would stop downstream
+    // applications from sharing one objc2 with these crates.
+    for (name, minor_line) in [
+        ("objc2", "0.6."),
+        ("objc2-foundation", "0.3."),
+        ("objc2-metal", "0.3."),
+        ("objc2-metal-performance-shaders", "0.3."),
+        ("objc2-metal-performance-shaders-graph", "0.3."),
+        ("block2", "0.6."),
     ] {
         let dependency = dependencies
             .get(name)
             .and_then(toml::Value::as_table)
             .unwrap_or_else(|| panic!("workspace dependency `{name}`"));
-        assert_eq!(
-            dependency.get("version").and_then(toml::Value::as_str),
-            Some(version),
-            "workspace dependency `{name}` must reuse the pinned lockfile version"
+        let version = dependency
+            .get("version")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("workspace dependency `{name}` version"));
+        assert!(
+            version.starts_with(minor_line)
+                && version
+                    .chars()
+                    .all(|character| character.is_ascii_digit() || character == '.'),
+            "workspace dependency `{name}` must be a caret requirement within {minor_line}x, \
+             not `{version}`; a new minor is a breaking change for the Metal crates"
         );
     }
 

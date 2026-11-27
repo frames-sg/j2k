@@ -1,36 +1,47 @@
-# j2k-c boundaries
+# j2k-c module layout
 
-One adapter crate depends on the `j2k` facade in the same workspace. It has no
-fork of the codec and no dependency on rustdoc-hidden implementation APIs.
+`j2k-c` is a thin adapter over the `j2k` crate in the same workspace. It
+doesn't fork or reimplement any codec code.
 
-| File | Responsibility |
+| Path | Responsibility |
 | --- | --- |
-| `crates/j2k-c/src/abi.rs` | Fixed-width C values and versioned structures |
-| `crates/j2k-c/src/ffi.rs` | Raw pointers, handle ownership, prefix validation, unwind containment |
-| `crates/j2k-c/src/decoder.rs` | Safe owned J2K session, one cached prepared request, limits, native sample copy |
-| `crates/j2k-c/src/error.rs` | Typed codec/batch failure mapping and bounded diagnostics |
-| `crates/j2k-c/include/j2k.h` | C contract mirrored by the ABI structs and exercised by a separately compiled consumer |
-| `crates/j2k-c/include/j2k.hpp` | Header-only C++ ownership and error conversion |
-| `crates/j2k-c/native/` | C/C++ examples and installed-package consumer tests |
-| `crates/j2k-c/scripts/package.py` | Native shared-library build, relocatable package, dependency license notices |
+| `src/abi.rs` | Fixed-width C values and versioned structs |
+| `src/ffi.rs` | Raw pointers, handle ownership, struct-header checks, catching panics |
+| `src/decoder.rs` | The owned decoder: one cached prepared request, limits, native sample copies, the decoder's own thread pool |
+| `src/operations.rs` | Exact region planning and decoding, sRGB output, operation limits and cancellation |
+| `src/rows.rs` | Row streaming through the caller's callback |
+| `src/encode.rs` | Lossless and lossy encoding, JP2/JPH wrapping |
+| `src/error.rs` | Mapping codec and batch errors to status codes, bounded messages |
+| `include/j2k.h` | The C API, mirroring the structs in `src/abi.rs`; compiled by a separate consumer test |
+| `include/j2k.hpp` | Header-only C++ ownership and exceptions |
+| `native/` | C and C++ examples, and the consumer tests run against an installed package |
+| `cmake/`, `pkgconfig/` | CMake package and pkg-config templates |
+| `scripts/package.py` | Builds the shared library and the relocatable package, optionally as an archive with a `.sha256` file, and collects dependency license notices |
+| `scripts/test_package.py` | Checks an archive's checksum, unpacks it into a new directory, and builds and runs the consumer tests and examples against it |
 
-J2K owns image parsing, support classification, geometry, preparation, worker
-management, entropy decode, inverse transforms, and color interpretation. The library
-uses `EncodedImage`, `CpuBatchDecoder`, and `PreparedBatch` to retain input and
-workspaces without inventing a self-referential decoder. It copies completed
-native samples into a caller-owned byte buffer; it does not implement codec
-algorithms or additional color/sample transformations.
+`j2k` does the parsing, support checks, geometry, preparation, entropy
+decoding, inverse transforms, color interpretation and encoding. The adapter
+keeps the input and workspaces in `EncodedImage`, `CpuBatchDecoder` and
+`PreparedBatch`, and uses `J2kDecoder` for row streaming and sRGB regions. It
+copies finished samples into the caller's buffer, and returns encoded output
+in a buffer the caller frees with `j2k_buffer_free`. A decoder opened with
+`workers` from 1 to 64 owns a Rayon pool of that size; otherwise work runs on
+the codec's shared pool. The adapter adds no codec algorithms and no color or
+sample transforms of its own.
 
-All raw pointer operations stay in `ffi.rs`. Every unsafe block documents its
-storage/ownership assumption. The boundary uses opaque handles, fixed-width
-status values, size/version prefixes, and per-call caller-owned diagnostics.
-No Rust enum, string, vector, allocator ownership, or exception crosses the ABI.
+All raw-pointer code stays in `src/ffi.rs`, and every unsafe block says what
+it assumes about storage and ownership. The ABI uses opaque handles,
+fixed-width status values, size and version headers, and per-call error
+structs owned by the caller. No Rust enum, string, vector or panic crosses
+it.
 
-The header is maintained with the Rust declarations. Layout changes require
-contract tests and a C/C++ consumer build. Do not add an ABI symbol without
-ownership/error documentation and a representative caller-level test.
+`include/j2k.h` is maintained by hand alongside the Rust declarations. A
+layout change needs layout tests and a C and C++ consumer build. Don't add an
+ABI symbol without documenting its ownership and errors in `docs/api.md` and
+adding a test that calls it the way a C caller would.
 
-Codec behavior belongs in `j2k` and `j2k-native`; this crate owns
-foreign-language integration, packaging, and its documented support contract.
-The crate is `publish = false`: it ships as native packages built by
-`scripts/package.py`, which never publishes a release or uploads to a registry.
+Codec behavior belongs in `j2k` and `j2k-native`. This crate owns the C and
+C++ bindings, packaging, and the support statement in `docs/supported.md`. It
+has `publish = false`: it ships only as native packages built by
+`scripts/package.py`, which never uploads anything. The release workflow
+attaches those packages to each GitHub release.

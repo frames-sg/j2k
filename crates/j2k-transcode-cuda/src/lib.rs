@@ -9,8 +9,8 @@
 //! scalar code in `j2k-transcode` remains the oracle and fallback; this
 //! crate never reimplements it.
 //!
-//! The actual GPU kernels live in `j2k-cuda-runtime` CUDA Oxide projects and
-//! are loaded through the runtime's CUDA Driver API host layer. The GPU path is
+//! The GPU kernels live in `j2k-cuda-transcode-engine` CUDA Oxide projects
+//! and are loaded through the `j2k-cuda-runtime` CUDA Driver API host layer. The GPU path is
 //! gated behind the `cuda-runtime` feature; without it this accelerator behaves
 //! like Metal's non-macOS path (Explicit -> typed `Err`, Auto -> `Ok(None)`
 //! scalar fallback).

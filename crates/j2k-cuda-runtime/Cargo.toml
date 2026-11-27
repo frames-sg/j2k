@@ -1,6 +1,6 @@
 [package]
 name = "j2k-cuda-runtime"
-description = "CUDA codec engine and Driver API runtime for j2k device adapters"
+description = "Codec-neutral CUDA Driver API runtime for j2k device adapters"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

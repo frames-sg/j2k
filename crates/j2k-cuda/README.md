@@ -1,78 +1,57 @@
-# j2k-cuda
+# J2K CUDA
 
-CUDA adapter for JPEG 2000 / HTJ2K decode, GPU-resident encode, and the shared
-encode stages.
+> CUDA decode and encode for [J2K](https://github.com/frames-sg/j2k)
 
-CPU surface requests return host-memory surfaces. `Auto` can return CUDA-resident
-surfaces for promoted workloads when CUDA is available; other `Auto` requests
-stay on the CPU. Explicit CUDA decode supports both classic JPEG 2000 and HTJ2K in the
-adapter's supported image and code-block profiles, including reversible 5/3 and
-irreversible 9/7 transforms. Unsupported explicit CUDA requests return an error.
+[![Current Crates.io Version](https://img.shields.io/crates/v/j2k-cuda.svg)](https://crates.io/crates/j2k-cuda)
+[![Documentation](https://docs.rs/j2k-cuda/badge.svg)](https://docs.rs/j2k-cuda)
+[![license](https://shields.io/badge/license-MIT%2FApache--2.0-blue)](https://github.com/frames-sg/j2k#license)
 
-Device decodes follow the CPU's sample conversion for signed grayscale and
-color sources, including prepared and referenced batches. Grayscale and color
-region decodes plan only the code blocks, packets, and wavelet levels the region
-needs, and run each inverse DWT level over the region's window rather than whole
-bands.
+Decode JPEG 2000 and HTJ2K on an NVIDIA GPU, and encode lossless HTJ2K there.
+Decoding covers classic JPEG 2000 and HTJ2K with reversible 5/3 or
+irreversible 9/7 transforms, as whole images, regions, reduced resolutions,
+or batches, into CUDA device memory. CUDA does not decode components deeper
+than 16 bits, and encoding from CUDA buffers writes HTJ2K only.
 
-Encode from CUDA buffers is separate: it requires HTJ2K block coding and external
-validation, and rejects classic JPEG 2000 block coding. Strict host-input encode
-also requires supported CUDA stages throughout. The shared encode-stage adapter
-can accelerate individual stages without providing a complete classic encoder.
+You choose the backend per call with `BackendRequest`. `Auto` uses CUDA only
+for the image types and sizes where it was measured to be faster than the CPU
+and to give identical output, and runs everything else on the CPU. `Cuda`
+always uses CUDA and returns an error for an image it can't handle; a CUDA
+error is never retried on the CPU.
 
-The host-memory paths and the session types build by default. Enable the
-`cuda-runtime` feature for CUDA Driver API dispatch, CUDA-resident surface and
-buffer types, and the CUDA-buffer encode APIs. Without it, explicit CUDA
-requests return `CudaUnavailable` or an unsupported-request error.
+CUDA needs Linux, an NVIDIA driver, and the `cuda-runtime` feature. The
+kernels are compiled to PTX at build time with CUDA-Oxide (`cargo oxide`), for
+compute capability 8.0 and newer unless `J2K_CUDA_OXIDE_ARCH` says otherwise.
+Without CUDA-Oxide the crate still builds, and the kernels return an error
+when called. The API is experimental, so a minor release can change it (see
+[API stability](https://github.com/frames-sg/j2k/blob/main/book/stability.md)).
 
-## Host-input lossless encode routing
-
-`CudaLosslessEncoder::encode` follows the `EncodeBackendPreference` in each
-job's options. `CpuOnly` never touches CUDA. `Auto` uses CUDA for the stages it
-supports and returns a CPU result when no device is available or CUDA cannot
-run every stage. `RequireDevice` fails unless CUDA runs the whole encode. A
-CUDA error is never hidden by retrying on the CPU.
-
-The result reports the requested preference, the backend that completed the
-encode, the reason for any `Auto` fallback, and the number of CUDA dispatches
-per stage. A CPU backend with nonzero CUDA dispatches means CUDA ran some
-stages and the CPU finished the encode.
+## Usage
 
 ```rust
-use j2k::{
-    EncodeBackendPreference, J2kBlockCodingMode, J2kLosslessEncodeOptions,
-    J2kLosslessSamples,
-};
-use j2k_cuda::CudaLosslessEncoder;
+use j2k_core::{BackendRequest, DeviceSurface, ImageDecodeDevice, PixelFormat};
+use j2k_cuda::J2kDecoder;
 
-let pixels = [0_u8; 16 * 16];
-let samples = J2kLosslessSamples::new(&pixels, 16, 16, 1, 8, false)?;
-let options = J2kLosslessEncodeOptions::default()
-    .with_backend(EncodeBackendPreference::Auto)
-    .with_block_coding_mode(J2kBlockCodingMode::HighThroughput);
-let mut encoder = CudaLosslessEncoder::new();
-let result = encoder.encode(samples, &options)?;
-
-assert_eq!(result.requested_backend(), EncodeBackendPreference::Auto);
-# Ok::<(), Box<dyn std::error::Error>>(())
+let bytes = std::fs::read("image.jph")?;
+let mut decoder = J2kDecoder::new(&bytes)?;
+let surface = decoder.decode_to_device(PixelFormat::Rgb8, BackendRequest::Auto)?;
+println!("{:?} {:?}", surface.residency(), surface.dimensions());
 ```
 
-`CudaLosslessEncoder::encode_strict_cuda` and the older
-`encode_j2k_lossless_with_cuda` function always use `RequireDevice`, whatever
-the options say. The encoder can be moved between threads but not shared: each
-call takes `&mut self`. Input, routing, and runtime errors clear the cached GPU
-state before the next job.
+The [GPU chapter](https://github.com/frames-sg/j2k/blob/main/book/gpu.md) of
+the J2K Book covers batches, routing, encoding, and reading device memory.
 
-Enabling `cuda-runtime` does not guarantee that the CUDA Oxide kernels were
-built. PTX is only generated on Linux hosts with the cuda-oxide toolchain;
-other builds may embed placeholder PTX. Set `J2K_REQUIRE_CUDA_OXIDE_BUILD=1` on
-CUDA test and benchmark hosts to make missing PTX a build error. Calling a
-placeholder kernel returns an error saying the PTX was not built.
+## Feature flags
 
-NVIDIA performance numbers come from self-hosted benchmark runs.
+- `cuda-runtime`: CUDA dispatch, the kernels, and the device-memory types and
+  CUDA-buffer encode functions. Without it, the API still builds, `Auto` runs
+  on the CPU, and explicit CUDA requests return an error.
+- `cuda-profiling`: marks CUDA stages with NVTX ranges for Nsight Systems.
+  Implies `cuda-runtime`.
 
-## Links
+<!-- j2k-crate-footer -->
 
-- API docs: <https://docs.rs/j2k-cuda>
-- Repository: <https://github.com/frames-sg/j2k>
-- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>
+---
+
+Part of [J2K](https://github.com/frames-sg/j2k), a JPEG 2000 and HTJ2K codec
+for Rust. See the [J2K Book](https://github.com/frames-sg/j2k/tree/main/book)
+and the [API documentation](https://docs.rs/j2k).

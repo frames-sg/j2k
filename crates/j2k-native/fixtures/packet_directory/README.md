@@ -11,5 +11,5 @@ opj_compress -i input.ppm -o openjpeg_rgb_origin5x3_rpcl.j2k \
 
 This exercises independent packet encoding, three layers, reversible 5/3,
 non-square blocks, SOP/EPH, and a nonzero image origin. It has one tile-part,
-inline headers, no POC, and no PLT. It is a generated approximation, not an
-archival workload source.
+inline headers, no POC, and no PLT. It is generated test data, not a sample
+of a real workload.

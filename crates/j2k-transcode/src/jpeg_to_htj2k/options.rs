@@ -158,7 +158,8 @@ pub enum TranscodePrecision {
     /// codestreams. Quantization multiplies by the reciprocal step.
     #[default]
     F32,
-    /// Binary64 CPU arithmetic, the default before 0.14.
+    /// Binary64 CPU arithmetic. Reproduces the CPU output of J2K 0.13 and
+    /// earlier.
     ///
     /// CPU-only: the transform always runs on the CPU and its output differs
     /// from [`Self::F32`] and from every GPU backend. Explicitly requested

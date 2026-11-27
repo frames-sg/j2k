@@ -255,13 +255,14 @@ pub(crate) struct Decoder {
 #[pymethods]
 impl Decoder {
     #[new]
-    #[pyo3(signature = (*, layout="nchw", workers=None, strict=true, device="cpu"))]
+    #[pyo3(signature = (*, layout="nchw", workers=None, strict=true, device="cpu", partial=false))]
     fn new(
         py: Python<'_>,
         layout: &str,
         workers: Option<usize>,
         strict: bool,
         device: &str,
+        partial: bool,
     ) -> PyResult<Self> {
         #[cfg(not(feature = "cuda"))]
         let _ = py;
@@ -285,9 +286,15 @@ impl Decoder {
                 DecodeSettings::strict()
             } else {
                 DecodeSettings::lenient()
-            };
+            }
+            .with_partial_codestream(partial);
             options
         };
+        if partial && device != "cpu" {
+            return Err(PyValueError::new_err(
+                "partial codestreams decode on the CPU only; use device=\"cpu\"",
+            ));
+        }
         let is_cuda = device == "cuda" || device.starts_with("cuda:");
         match device {
             "cpu" => {}
@@ -436,20 +443,24 @@ impl Decoder {
     ) -> PyResult<Tensor> {
         self.check_process()?;
         let default_request = RegionRequest::new(region, reduction)?;
-        let mut decoded = if data.cast::<ImageRequest>().is_ok() {
+        let (mut decoded, jpeg) = if data.cast::<ImageRequest>().is_ok() {
             let inputs = encoded_inputs(owned_items([data.clone()].into_iter())?, default_request)?;
-            self.decode_encoded(py, inputs)?
+            let jpeg = inputs.first().is_some_and(|input| is_jpeg(&input.bytes));
+            (self.decode_encoded(py, inputs)?, jpeg)
         } else {
             let data = EncodedInput::extract(data)?;
+            let jpeg = is_jpeg(data.as_bytes());
             #[cfg(feature = "cuda")]
             if let Some(cuda) = &self.cuda {
-                if !is_jpeg(data.as_bytes()) {
+                if !jpeg {
                     if let Some(request) = default_request.legacy() {
-                        return cuda.decode_one(py, data.as_bytes(), request);
+                        let (tensor, warnings) = cuda.decode_one(py, data.as_bytes(), request)?;
+                        warn_metadata_recoveries(py, &warnings)?;
+                        return Ok(tensor);
                     }
                 }
             }
-            self.decode_encoded(
+            let decoded = self.decode_encoded(
                 py,
                 owned_items(
                     [ImageRequest {
@@ -459,7 +470,8 @@ impl Decoder {
                     }]
                     .into_iter(),
                 )?,
-            )?
+            )?;
+            (decoded, jpeg)
         };
         if let Some((_, error)) = decoded.errors.pop() {
             return Err(PyValueError::new_err(error));
@@ -477,6 +489,12 @@ impl Decoder {
                 "JPEG decode required recovery or accepted unverified completion; use decode_batch for per-row status",
                 py.get_type::<crate::RecoveredImageWarning>(),
             ))?;
+        } else if !jpeg {
+            // A lenient JPEG 2000 decode reports the metadata recoveries it
+            // used as warnings on its row, not through `recovered`.
+            for row in &group.warnings {
+                warn_metadata_recoveries(py, row)?;
+            }
         }
         let mut tensor = group.tensor;
         tensor.remove_batch_axis()?;
@@ -579,12 +597,7 @@ impl Decoder {
             tensor.remove_batch_axis()?;
             Ok::<_, PyErr>((tensor, warnings))
         })?;
-        for warning in warnings {
-            py.import("warnings")?.call_method1(
-                "warn",
-                (warning, py.get_type::<crate::RecoveredImageWarning>()),
-            )?;
-        }
+        warn_metadata_recoveries(py, &warnings)?;
         Ok(tensor)
     }
 
@@ -958,6 +971,21 @@ fn legacy_inputs(inputs: Vec<ImageRequest>) -> PyResult<Vec<EncodedImage>> {
         output.push(EncodedImage::new(input.bytes, request));
     }
     Ok(output)
+}
+
+/// Emit one `RecoveredImageWarning` for each lenient JPEG 2000 metadata
+/// recovery a decode used.
+pub(crate) fn warn_metadata_recoveries(py: Python<'_>, warnings: &[String]) -> PyResult<()> {
+    for warning in warnings {
+        py.import("warnings")?.call_method1(
+            "warn",
+            (
+                warning.as_str(),
+                py.get_type::<crate::RecoveredImageWarning>(),
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 fn encoded_inputs(

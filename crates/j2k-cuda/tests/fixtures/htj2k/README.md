@@ -1,4 +1,6 @@
-HTJ2K fixture for CUDA refinement-plan and runtime-boundary coverage.
+# HTJ2K fixture
+
+HTJ2K fixture for the CUDA refinement-plan and runtime tests.
 
 The local `openhtj2k_ds0_ht_09_b11.j2k` fixture is from the OpenHTJ2K
 conformance data, copied from `ds0_ht_09_b11.j2k` at OpenHTJ2K commit
@@ -6,15 +8,15 @@ conformance data, copied from `ds0_ht_09_b11.j2k` at OpenHTJ2K commit
 `d4f2031359c32eb24825d00dde05a92cf3ae451e`. It is a tiny HTONLY codestream
 derived from the JPEG 2000 Part 4 / ITU-T T.803 HTJ2K conformance set.
 
-The local `.j2k` preserves the licensed fixture copy beside this README and its
-OpenHTJ2K license. Current CUDA host-surface, plan, and kernel tests source the
-codestream bytes through `j2k_test_support::openhtj2k_refinement_odd_fixture`,
-backed by
+The local `.j2k` keeps the licensed copy beside this README and the
+OpenHTJ2K license. The CUDA host-surface, plan and kernel tests read the
+codestream through `j2k_test_support::openhtj2k_refinement_odd_fixture`,
+which loads
 `crates/j2k-test-support/fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k`. The
-host-surface test uses the paired local `openhtj2k_ds0_ht_09_b11.gray` oracle.
+host-surface test compares against the local `openhtj2k_ds0_ht_09_b11.gray`.
 
-The fixture is intentionally checked-in test data: tests must not invoke an
-external encoder or decoder at runtime.
+Tests read these checked-in files; they never run an external encoder or
+decoder.
 
 The local `.gray` file contains expected 8-bit grayscale samples in row-major
 order from decoding the checked-in codestream with OpenJPH.

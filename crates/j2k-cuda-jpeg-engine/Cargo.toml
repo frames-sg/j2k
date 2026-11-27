@@ -1,6 +1,6 @@
 [package]
 name = "j2k-cuda-jpeg-engine"
-description = "CUDA baseline JPEG codec engine for J2K adapters"
+description = "CUDA JPEG codec engine for J2K adapters"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

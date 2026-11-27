@@ -3,116 +3,83 @@
 use super::super::{is_calendar_date, validate_changelog_state, ReleaseIntegrityMode};
 use super::VERSION;
 
-#[test]
-fn pre_candidate_changelog_accepts_exact_unreleased_state() {
-    let changelog = "# Changelog\n\n## [Unreleased]\n\nStaged workspace version: `0.7.0`.\n";
-    assert_eq!(
-        validate_changelog_state(changelog, VERSION, ReleaseIntegrityMode::PreCandidate),
-        Ok(())
-    );
-}
+const WITH_ENTRY: &str = "# Changelog\n\nChanges for the next release.\n\n## Unreleased\n\n### Decoding\n\n- Faster region decode.\n";
+const EMPTY: &str =
+    "# Changelog\n\nChanges for the next release.\n\n## Unreleased\n\n### Decoding\n";
 
 #[test]
-fn pre_candidate_changelog_accepts_unversioned_work_after_the_current_release() {
-    let changelog = "# Changelog\n\n## [Unreleased]\n\n- Next change.\n\n## [0.7.0] - 2026-07-10\n";
-    assert_eq!(
-        validate_changelog_state(changelog, VERSION, ReleaseIntegrityMode::PreCandidate),
-        Ok(())
-    );
-
-    let staged = "## [Unreleased]\nStaged workspace version: `0.7.0`.\n## [0.7.0] - 2026-07-10\n";
-    assert!(validate_changelog_state(staged, VERSION, ReleaseIntegrityMode::PreCandidate).is_err());
-}
-
-#[test]
-fn pre_candidate_changelog_accepts_frozen_release_state() {
-    let changelog = "# Changelog\n\n## [0.7.0] - 2026-07-10\n";
-    assert_eq!(
-        validate_changelog_state(changelog, VERSION, ReleaseIntegrityMode::PreCandidate),
-        Ok(())
-    );
-}
-
-#[test]
-fn pre_candidate_changelog_rejects_inline_examples_and_duplicates() {
-    let inline = "At release use `## [0.7.0] - 2026-07-10`.\n";
-    assert!(validate_changelog_state(inline, VERSION, ReleaseIntegrityMode::PreCandidate).is_err());
-
-    let duplicated = "## [Unreleased]\n## [Unreleased]\nStaged workspace version: `0.7.0`.\n";
-    assert!(
-        validate_changelog_state(duplicated, VERSION, ReleaseIntegrityMode::PreCandidate).is_err()
-    );
-
-    let malformed = "## [Unreleased]\nStaged workspace version: `0.7.0`.\n## [0.7.0 - 2026-07-10\n";
-    assert!(
-        validate_changelog_state(malformed, VERSION, ReleaseIntegrityMode::PreCandidate).is_err()
-    );
-
-    let fenced_only = "```markdown\n## [Unreleased]\nStaged workspace version: `0.7.0`.\n```\n";
-    assert!(
-        validate_changelog_state(fenced_only, VERSION, ReleaseIntegrityMode::PreCandidate).is_err()
-    );
-
-    let html_comment_only = "<!--\n## [Unreleased]\nStaged workspace version: `0.7.0`.\n-->\n";
-    assert!(validate_changelog_state(
-        html_comment_only,
-        VERSION,
+fn changelog_accepts_one_unreleased_section_in_both_modes() {
+    for mode in [
         ReleaseIntegrityMode::PreCandidate,
+        ReleaseIntegrityMode::Publish,
+    ] {
+        assert_eq!(validate_changelog_state(WITH_ENTRY, VERSION, mode), Ok(()));
+    }
+}
+
+#[test]
+fn empty_unreleased_section_is_fine_between_releases_but_cannot_publish() {
+    assert_eq!(
+        validate_changelog_state(EMPTY, VERSION, ReleaseIntegrityMode::PreCandidate),
+        Ok(())
+    );
+    let error = validate_changelog_state(EMPTY, VERSION, ReleaseIntegrityMode::Publish)
+        .expect_err("publishing needs release notes");
+    assert!(error.contains("0.7.0"), "unexpected error: {error}");
+
+    let headings_then_next_section = "## Unreleased\n### Decoding\n## Notes\n- not release notes\n";
+    assert!(validate_changelog_state(
+        headings_then_next_section,
+        VERSION,
+        ReleaseIntegrityMode::Publish,
     )
     .is_err());
 }
 
 #[test]
-fn publish_changelog_accepts_one_calendar_valid_dated_heading() {
-    let changelog = "# Changelog\n\n## [0.7.0] - 2028-02-29\n";
-    assert_eq!(
-        validate_changelog_state(changelog, VERSION, ReleaseIntegrityMode::Publish),
-        Ok(())
-    );
+fn changelog_rejects_missing_duplicate_or_hidden_unreleased_headings() {
+    for invalid in [
+        "# Changelog\n",
+        "## [Unreleased]\n- Old-style heading.\n",
+        "## Unreleased\n- One.\n## Unreleased\n- Two.\n",
+        "```markdown\n## Unreleased\n- Fenced.\n```\n",
+        "<!--\n## Unreleased\n- Commented.\n-->\n",
+        "    ## Unreleased\n",
+    ] {
+        for mode in [
+            ReleaseIntegrityMode::PreCandidate,
+            ReleaseIntegrityMode::Publish,
+        ] {
+            assert!(
+                validate_changelog_state(invalid, VERSION, mode).is_err(),
+                "{invalid:?} must be rejected in {mode:?}"
+            );
+        }
+    }
 }
 
 #[test]
-fn publish_changelog_rejects_provisional_or_duplicate_state() {
-    let provisional =
-        "## [Unreleased]\nStaged workspace version: `0.7.0`.\n## [0.7.0] - 2026-07-10\n";
-    assert!(validate_changelog_state(provisional, VERSION, ReleaseIntegrityMode::Publish).is_err());
-
-    let duplicated = "## [0.7.0] - 2026-07-10\n## [0.7.0] - 2026-07-11\n";
-    assert!(validate_changelog_state(duplicated, VERSION, ReleaseIntegrityMode::Publish).is_err());
-
-    for code_only in [
-        "```markdown\n## [0.7.0] - 2026-07-10\n```\n",
-        "    ## [0.7.0] - 2026-07-10\n",
-        "<!--\n## [0.7.0] - 2026-07-10\n-->\n",
-        "<div class=\"example\">\n## [0.7.0] - 2026-07-10\n</div>\n",
+fn changelog_rejects_release_sections() {
+    for release in [
+        "## [0.7.0] - 2026-07-10",
+        "## [0.6.2] - 2026-06-28",
+        "## 0.7.0",
+        "## v0.7.0",
     ] {
-        assert!(
-            validate_changelog_state(code_only, VERSION, ReleaseIntegrityMode::Publish).is_err()
-        );
-    }
-
-    let real_with_fenced_example =
-        "## [0.7.0] - 2026-07-10\n```markdown\n## [0.7.0] - 2026-07-11\n```\n";
-    assert_eq!(
-        validate_changelog_state(
-            real_with_fenced_example,
-            VERSION,
+        let changelog = format!("{WITH_ENTRY}\n{release}\n\n- Shipped.\n");
+        for mode in [
+            ReleaseIntegrityMode::PreCandidate,
             ReleaseIntegrityMode::Publish,
-        ),
-        Ok(())
-    );
-
-    for tag in ["pre", "script", "style", "textarea"] {
-        let raw_html = format!("<{tag}>\n## [0.7.0] - 2026-07-10\n</{tag}>\n");
-        assert!(
-            validate_changelog_state(&raw_html, VERSION, ReleaseIntegrityMode::Publish).is_err(),
-            "{tag} HTML content must not count as a release heading"
-        );
+        ] {
+            let error = validate_changelog_state(&changelog, VERSION, mode)
+                .expect_err("release sections belong in GitHub Releases");
+            assert!(error.contains(release), "unexpected error: {error}");
+        }
     }
 
-    let real_after_div = "<div>\n## [0.7.0] - 2026-07-09\n</div>\n\n## [0.7.0] - 2026-07-10\n";
+    let fenced_example = format!("{WITH_ENTRY}\n```markdown\n## [0.7.0] - 2026-07-10\n```\n");
     assert_eq!(
-        validate_changelog_state(real_after_div, VERSION, ReleaseIntegrityMode::Publish),
+        validate_changelog_state(&fenced_example, VERSION, ReleaseIntegrityMode::Publish),
         Ok(())
     );
 }

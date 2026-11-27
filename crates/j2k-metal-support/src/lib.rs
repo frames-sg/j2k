@@ -3,11 +3,10 @@
 //! Shared Metal runtime, allocation, access, and dispatch helpers for J2K
 //! adapter crates.
 //!
-//! As of 0.9, this crate is the ownership and runtime boundary for every J2K
-//! Metal adapter. Owned Objective-C protocol objects use
-//! `Retained<ProtocolObject<dyn MTL...>>`; borrowed expert API values use
-//! `&ProtocolObject<dyn MTL...>`. No `metal-rs` compatibility surface is
-//! provided.
+//! This crate owns the Metal runtime for every J2K Metal adapter. Owned
+//! Objective-C objects are `Retained<ProtocolObject<dyn MTL...>>`, and
+//! borrowed values in the expert API are `&ProtocolObject<dyn MTL...>`.
+//! `metal-rs` types are not accepted.
 
 #![warn(unreachable_pub)]
 #![warn(clippy::non_send_fields_in_send_ty)]

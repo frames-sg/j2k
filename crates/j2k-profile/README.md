@@ -1,36 +1,26 @@
-# j2k-profile
+# J2K Profile
 
-Small profiling and route-summary helper crate for J2K.
+> Profiling helpers shared by the [J2K](https://github.com/frames-sg/j2k) crates
 
-Codec and adapter crates use it to emit stable profile rows and route decisions
-without each crate reimplementing environment parsing or summary formatting.
+[![Current Crates.io Version](https://img.shields.io/crates/v/j2k-profile.svg)](https://crates.io/crates/j2k-profile)
+[![Documentation](https://docs.rs/j2k-profile/badge.svg)](https://docs.rs/j2k-profile)
+[![license](https://shields.io/badge/license-MIT%2FApache--2.0-blue)](https://github.com/frames-sg/j2k#license)
 
-## Bounded, fallible ownership
+This crate shares profiling code between the other J2K crates; use
+[`j2k`](https://crates.io/crates/j2k) instead. It reads the `J2K_*` profiling
+environment variables and formats the timing and GPU-route rows the codecs
+print to stderr, and its API is hidden from the documentation. The variables
+are listed in [Environment variables](https://github.com/frames-sg/j2k/blob/main/book/environment-variables.md).
 
-Owned fields, parsed rows, summaries, and formatted output are limited by
-`ProfileLimits`. Convenience entry points use the default limits and return
-`ProfileResult`; callers with tighter service limits can use the corresponding
-`*_with_limits` functions or constructors.
+## Feature flags
 
-```rust
-use j2k_profile::{parse_profile_line, ParsedProfileKind, ProfileResult};
+- `std` (default): print rows and read environment variables. Without it, the
+  crate is `no_std` and does no I/O.
 
-fn parse_row(line: &str) -> ProfileResult<()> {
-    if let Some(fields) = parse_profile_line(line)? {
-        if fields.kind() == ParsedProfileKind::Row {
-            let _codec = fields.get("codec");
-        }
-    }
-    Ok(())
-}
-```
+<!-- j2k-crate-footer -->
 
-Profile owner graphs are move-only. Optional codec profiling helpers print a
-`j2k_profile_error` diagnostic when allocation, input, or formatting fails;
-profiling failures do not alter the codec operation's success result.
+---
 
-## Links
-
-- API docs: <https://docs.rs/j2k-profile>
-- Repository: <https://github.com/frames-sg/j2k>
-- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>
+Part of [J2K](https://github.com/frames-sg/j2k), a JPEG 2000 and HTJ2K codec
+for Rust. See the [J2K Book](https://github.com/frames-sg/j2k/tree/main/book)
+and the [API documentation](https://docs.rs/j2k).

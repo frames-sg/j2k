@@ -44,7 +44,7 @@ fn null_arguments_versions_reserved_fields_and_indices_are_rejected() {
         J2K_ABI_MISMATCH
     );
     options = J2kCOpenOptions::default();
-    options.flags = 2;
+    options.flags = 4;
     assert_eq!(
         failed_open(encoded.as_ptr(), &raw const options, &raw mut error),
         J2K_INVALID_ARGUMENT
@@ -515,6 +515,11 @@ fn abi_one_layout_matches_the_c_header_and_accepts_extension_storage() {
     assert_eq!(size_of::<J2kCEncodeOptions>(), 32);
     assert_eq!(size_of::<J2kCEncodeReport>(), 40);
     assert_eq!(size_of::<J2kCColorInfo>(), 32);
+    assert_eq!(size_of::<J2kCCompleteness>(), 20);
+    assert_eq!(size_of::<J2kCJpegLsInfo>(), 56);
+    assert_eq!(size_of::<J2kCJpegLsEncodeOptions>(), 40);
+    assert_eq!(size_of::<J2kCRleLayout>(), 32);
+    assert_eq!(size_of::<J2kCRleReport>(), 16);
     #[cfg(target_pointer_width = "64")]
     assert_eq!(size_of::<J2kCEncodeParams>(), 80);
     assert_eq!(size_of::<J2kCError>(), 260);
@@ -543,11 +548,13 @@ fn abi_one_layout_matches_the_c_header_and_accepts_extension_storage() {
             ("J2K_STOPPED", J2K_STOPPED),
             ("J2K_ENCODE_FAILED", J2K_ENCODE_FAILED),
             ("J2K_CANCELLED", J2K_CANCELLED),
+            ("J2K_INCOMPLETE", J2K_INCOMPLETE),
             ("J2K_INTERPRETATION_NATIVE", J2K_INTERPRETATION_NATIVE),
             ("J2K_INTERPRETATION_SRGB8", J2K_INTERPRETATION_SRGB8),
             ("J2K_ROUTE_NATIVE_CPU", J2K_ROUTE_NATIVE_CPU),
             ("J2K_ROUTE_REGION_PLANES", J2K_ROUTE_REGION_PLANES),
             ("J2K_OPEN_LENIENT", J2K_OPEN_LENIENT),
+            ("J2K_OPEN_PARTIAL", J2K_OPEN_PARTIAL),
             ("J2K_WARNING_LENIENT_RECOVERY", J2K_WARNING_LENIENT_RECOVERY),
             ("J2K_ENCODE_HTJ2K", J2K_ENCODE_HTJ2K),
             ("J2K_ENCODE_SIGNED", J2K_ENCODE_SIGNED),
@@ -594,6 +601,10 @@ fn abi_one_layout_matches_the_c_header_and_accepts_extension_storage() {
             ("J2K_ALPHA_NONE", J2K_ALPHA_NONE),
             ("J2K_ALPHA_STRAIGHT", J2K_ALPHA_STRAIGHT),
             ("J2K_ALPHA_PREMULTIPLIED", J2K_ALPHA_PREMULTIPLIED),
+            ("J2K_JPEGLS_INTERLEAVE_NONE", J2K_JPEGLS_INTERLEAVE_NONE),
+            ("J2K_JPEGLS_INTERLEAVE_LINE", J2K_JPEGLS_INTERLEAVE_LINE),
+            ("J2K_JPEGLS_INTERLEAVE_SAMPLE", J2K_JPEGLS_INTERLEAVE_SAMPLE),
+            ("J2K_RLE_LENIENT", J2K_RLE_LENIENT),
         ]
     );
     for (name, rust) in [
@@ -756,6 +767,65 @@ fn abi_one_layout_matches_the_c_header_and_accepts_extension_storage() {
                 specifications,
                 reserved,
                 icc_profile_bytes
+            }),
+        ),
+        (
+            "j2k_completeness",
+            rust_layout!(J2kCCompleteness {
+                header,
+                complete,
+                has_exact_reduction,
+                min_exact_reduction
+            }),
+        ),
+        (
+            "j2k_jpegls_info",
+            rust_layout!(J2kCJpegLsInfo {
+                header,
+                width,
+                height,
+                components,
+                bit_depth,
+                near,
+                interleave,
+                restart_interval,
+                reserved,
+                row_bytes,
+                buffer_bytes
+            }),
+        ),
+        (
+            "j2k_jpegls_encode_options",
+            rust_layout!(J2kCJpegLsEncodeOptions {
+                header,
+                width,
+                height,
+                components,
+                bit_depth,
+                near,
+                interleave,
+                restart_interval,
+                reserved
+            }),
+        ),
+        (
+            "j2k_rle_layout",
+            rust_layout!(J2kCRleLayout {
+                header,
+                rows,
+                columns,
+                samples_per_pixel,
+                bits_allocated,
+                planar_configuration,
+                flags
+            }),
+        ),
+        (
+            "j2k_rle_report",
+            rust_layout!(J2kCRleReport {
+                header,
+                overlong_segments,
+                nonzero_unused_offsets
             }),
         ),
     ] {

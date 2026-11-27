@@ -2,7 +2,8 @@
 
 use j2k_tilecodec::TileDecompress;
 use j2k_tilecodec::{
-    DeflateCodec, DeflatePool, LzwCodec, LzwPool, NoPool, UncompressedCodec, ZstdCodec, ZstdPool,
+    DeflateCodec, DeflatePool, LzwCodec, LzwPool, NoPool, PackBitsCodec, UncompressedCodec,
+    ZstdCodec, ZstdPool,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -20,4 +21,5 @@ fuzz_target!(|data: &[u8]| {
 
     let mut no_pool = NoPool;
     let _ = UncompressedCodec::decompress_into(&mut no_pool, data, &mut out);
+    let _ = PackBitsCodec::decompress_into(&mut no_pool, data, &mut out);
 });
