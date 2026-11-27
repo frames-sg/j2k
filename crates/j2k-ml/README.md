@@ -1,102 +1,64 @@
-# j2k-ml
+# J2K ML
 
-`j2k-ml` is an independent integration for Burn 0.21 that adapts JPEG, JPEG
-2000, and HTJ2K batches. It is maintained by the `j2k` project and is not an official Tracel or Burn crate.
+> [Burn](https://github.com/tracel-ai/burn) tensors from [J2K](https://github.com/frames-sg/j2k)'s batch decoders
 
-[GPU image decoding for AI pipelines](https://frames-sg.com/gpu-image-decoding-ai/)
-provides the project-level overview of the tensor and resident-device routes.
+[![Current Crates.io Version](https://img.shields.io/crates/v/j2k-ml.svg)](https://crates.io/crates/j2k-ml)
+[![Documentation](https://docs.rs/j2k-ml/badge.svg)](https://docs.rs/j2k-ml)
+[![license](https://shields.io/badge/license-MIT%2FApache--2.0-blue)](https://github.com/frames-sg/j2k#license)
 
-## Quick start
+Decode batches of JPEG, JPEG 2000, and HTJ2K images into Burn 0.21 tensors.
+Each group of images with the same shape and sample type becomes one rank-4
+integer tensor (`U8`, `U16`, or `I16`, in NCHW or NHWC order), and its
+`source_indices()` map the tensor's rows back to your inputs. Casting,
+normalization, and augmentation stay in ordinary Burn code. This crate is
+maintained by the J2K project; it is not an official Tracel or Burn crate.
 
-The portable route decodes with the CPU codec and creates the resulting tensor
-on the selected Burn backend:
+`CpuBurnDecoder` decodes on the CPU for any Burn backend, and takes JPEG and
+JPEG 2000 in one batch. For JPEG 2000 and HTJ2K on a GPU,
+`CudaDirectBurnDecoder` decodes straight into Burn-owned CUDA memory, and
+`CudaUploadBurnDecoder` and `MetalUploadBurnDecoder` decode on the GPU and
+upload the pixels through host memory. The API is experimental, so a minor
+release can change it (see
+[API stability](https://github.com/frames-sg/j2k/blob/main/book/stability.md)).
 
-```bash
-cargo add j2k-ml --features cpu
+## Usage
+
+```rust
+use std::sync::Arc;
+
+use burn::tensor::backend::Backend;
+use j2k::{BatchDecodeOptions, EncodedImage};
+use j2k_ml::{BurnDecodeError, CpuBurnDecoder};
+
+fn decode<B: Backend>(device: B::Device, files: Vec<Arc<[u8]>>) -> Result<(), BurnDecodeError> {
+    let mut decoder = CpuBurnDecoder::<B>::new(device, BatchDecodeOptions::default());
+    let batch = decoder.decode(files.into_iter().map(EncodedImage::full).collect())?;
+    for group in batch.groups() {
+        println!("{:?} {:?}", group.source_indices(), group.tensor().tensor().dims());
+    }
+    Ok(())
+}
 ```
 
-For a complete `Dataset` -> `DataLoader` -> `Batcher` example:
+Images that fail to decode are listed in `batch.errors()`, and groups that
+fail in `batch.group_errors()`. The
+[Burn section](https://github.com/frames-sg/j2k/blob/main/book/machine-learning.md#burn)
+of the J2K Book has a full `Dataset` and `Batcher` example and covers the GPU
+routes and error handling.
 
-```bash
-cargo run -p j2k-ml --example training_batcher --features cpu
-```
+## Feature flags
 
-The example keeps a `CpuBurnDecoder` behind a mutex because Burn's `Batcher`
-receives `&self`, preserves label order through each codec group's
-`source_indices`, then casts and normalizes with ordinary Burn tensor
-operations.
+- `cpu`: `CpuBurnDecoder`.
+- `cuda`: `CudaDirectBurnDecoder` and `CudaUploadBurnDecoder`, for Burn's CUDA
+  backend. It builds `j2k-cuda` with `cuda-runtime`, so it needs Linux, an
+  NVIDIA driver, and CUDA-Oxide (see
+  [`j2k-cuda`](https://crates.io/crates/j2k-cuda)).
+- `metal`: `MetalUploadBurnDecoder`, for Burn's wgpu backend on macOS.
 
-With the `cpu` feature, `CpuBurnDecoder::decode_batch(&[ImageInput])` accepts
-JPEG and JPEG 2000 or HTJ2K together. `ImageInput::Jpeg` carries a
-`j2k_jpeg::JpegBatchInput`; `ImageInput::Jpeg2000` borrows an `EncodedImage`.
-The common `BurnBatchDecode` exposes groups, indexed codec-tagged errors and
-group failures through accessors. Group order is unspecified; `source_indices()`
-is authoritative. Each group exposes returned sample metadata, typed warnings,
-`recovered()`, and optional `j2k_info()` for JPEG 2000 details. Session strictness
-controls both codec families while retaining JPEG color hints. The existing
-J2K `decode` and prepared paths remain available. JPEG region, reduction and GPU
-codec execution remain unsupported; a GPU Burn destination uses an ordinary upload.
+<!-- j2k-crate-footer -->
 
-JPEG tensor output remains RGB uint8 by default, with grayscale expanded to three identical channels. Grayscale JPEG 2000 and HTJ2K remain one channel. Output metadata describes the returned tensor. A later explicit `channels="native"` option may preserve grayscale JPEG as one channel without changing existing defaults. Source component counts, when exposed, are per input row and remain aligned with source_indices.
+---
 
-The Rust session defaults to strict decoding with the same pixel-integrity
-contract as Python: complete required image data, no damage concealment,
-missing-data substitution or unverified completion. Leniency permits supported
-recovery, records it per row, and never also reports that row as an error.
-Cosmetic warnings do not set `recovered()`. Unknown intent at progressive EOF
-is rejected by default. No channels option is currently exposed.
-
-CUDA can decode directly into Burn-owned device storage:
-
-```bash
-cargo run -p j2k-ml --example cuda_direct --features cuda
-```
-
-`CudaDirectBurnDecoder` allocates the destination through Burn/CubeCL, decodes
-into that allocation, validates synchronous codec completion, and then returns
-the same allocation as an ordinary fused `burn_cuda::Cuda` tensor. Decoded
-pixels do not pass through host memory or an intermediate device copy.
-
-Explicit staged accelerator-decode-and-upload examples are:
-
-```bash
-cargo run -p j2k-ml --example cuda_upload --features cuda
-cargo run -p j2k-ml --example metal_upload --features metal
-```
-
-`CudaUploadBurnDecoder` and `MetalUploadBurnDecoder` run codec decoding on the
-GPU, copy the decoded pixels to host memory, and then upload them with Burn's
-ordinary tensor API.
-
-## Who owns batching?
-
-| Responsibility | Owner |
-| --- | --- |
-| Dataset reads, labels, sampling, prefetch, resizing, augmentation, and training batches | The Burn application and its `Dataset`/`DataLoader`/`Batcher` |
-| Parsing, compatible-image grouping, preparation reuse, and JPEG, JPEG 2000, and HTJ2K execution | The `j2k` codec crates, including `j2k-jpeg` |
-| Direct CUDA destinations, host staging, and ordinary Burn tensor materialization/upload | `j2k-ml` |
-| Float conversion and normalization | Ordinary Burn tensor operations in the application |
-
-One application batch can yield multiple codec groups when images have
-different shapes, channel layouts, sample types, or decode requests. Training
-code should either build uniform batches or handle every returned group and
-its `source_indices`.
-
-## Routes
-
-| Feature | Codec execution | Burn destination |
-| --- | --- | --- |
-| `cpu` | Persistent CPU batch decoder | Any compatible Burn backend; placing the `TensorData` on a GPU backend performs an upload |
-| `cuda` direct | Persistent CUDA decoder | Synchronous decode into Burn-owned CUDA storage |
-| `cuda` staged | Persistent CUDA decoder, then decoded-pixel readback | Ordinary Burn CUDA upload |
-| `metal` | Persistent Metal decoder, then decoded-pixel readback | Ordinary Burn wgpu/Metal upload |
-
-The adapter returns ordinary rank-4 NCHW or NHWC `U8`, `U16`, or `I16` Burn
-tensors. It does not own normalization, augmentation, dataset policy, or a
-second decoding pipeline.
-
-See the [Burn integration guide](../../docs/j2k-ml.md) for the full API,
-support matrix, safety notes, test commands, and benchmark results. The API docs
-are on [docs.rs](https://docs.rs/j2k-ml), the source is in the
-[J2K repository](https://github.com/frames-sg/j2k), and codec support is listed
-in [public support](../../docs/public-support.md).
+Part of [J2K](https://github.com/frames-sg/j2k), a JPEG 2000 and HTJ2K codec
+for Rust. See the [J2K Book](https://github.com/frames-sg/j2k/tree/main/book)
+and the [API documentation](https://docs.rs/j2k).

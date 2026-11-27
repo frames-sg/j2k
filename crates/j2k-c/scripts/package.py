@@ -277,11 +277,10 @@ def main():
         shutil.copytree(CRATE / source, output / directory)
     quickstart = (CRATE / "docs" / "quickstart.md").read_text(encoding="utf-8")
     (output / "README.md").write_text(
-        quickstart.replace("](api.md)", "](docs/api.md)").replace("](supported.md)", "](docs/supported.md)"),
+        re.sub(r"\]\((api|supported)\.md(#[^)]*)?\)", r"](docs/\1.md\2)", quickstart),
         encoding="utf-8")
     for name in (*WORKSPACE_LICENSES, "NOTICES.md"):
         shutil.copy2(ROOT / name, output / name)
-    shutil.copy2(CRATE / "CHANGELOG.md", output / "CHANGELOG.md")
     config = render_cmake_config(
         (CRATE / "cmake" / "J2KConfig.cmake.in").read_text(encoding="utf-8"),
         library,

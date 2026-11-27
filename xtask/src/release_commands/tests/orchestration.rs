@@ -52,7 +52,7 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
     for directory in [
         release_root.join(".github/workflows"),
         release_root.join("scripts"),
-        release_root.join("xtask"),
+        release_root.join("contributor-book"),
     ] {
         std::fs::create_dir_all(directory).expect("create hermetic release directory");
     }
@@ -61,7 +61,10 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
             ".github/workflows/publish.yml",
             include_str!("../../../../.github/workflows/publish.yml"),
         ),
-        ("xtask/RELEASING.md", include_str!("../../../RELEASING.md")),
+        (
+            "contributor-book/releasing.md",
+            include_str!("../../../../contributor-book/releasing.md"),
+        ),
         (
             "scripts/publish-crate.sh",
             include_str!("../../../../scripts/publish-crate.sh"),
@@ -88,9 +91,9 @@ fn release_integrity_publish_mode_accepts_hermetic_final_metadata() {
     .expect("write workspace manifest fixture");
     std::fs::write(
         release_root.join("CHANGELOG.md"),
-        format!("# Changelog\n\n## [{version}] - 2026-08-13\n"),
+        "# Changelog\n\n## Unreleased\n\n- Release notes.\n",
     )
-    .expect("write finalized changelog fixture");
+    .expect("write release-ready changelog fixture");
 
     run_test_in_dir(
         "release_commands::tests::orchestration::release_integrity_publish_mode_accepts_hermetic_final_metadata",

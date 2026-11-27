@@ -3,11 +3,22 @@
 - `native_decode_fuzz` decodes a codestream with `decode_native`. Depending on
   the low bits of the input length, it also decodes a region and the
   reversible 5/3 coefficients, in strict or lenient mode. Images over the
-  whole-image pixel cutoff still exercise a bounded region at the right/bottom
-  edge. Smaller images exercise different corners according to the input length.
+  whole-image pixel cutoff still exercise a bounded region at the
+  right/bottom edge; smaller images exercise a corner chosen by the input
+  length.
 - `lossless_roundtrip_fuzz` encodes an image chosen by the input with the
-  reversible transform, classic or HTJ2K, and requires the decode to return
+  reversible transform, classic or HTJ2K, and checks that decoding returns
   the input samples exactly.
+
+`cargo xtask fuzz-run` runs these and the other workspace fuzz targets with
+nightly Rust and `cargo-fuzz`, for `J2K_FUZZ_RUNS` runs each (default 1000).
+To run one target from this crate's directory:
+
+```sh
+cargo +nightly fuzz run native_decode_fuzz
+```
+
+## Seeds
 
 The seeds in `corpus/native_decode_fuzz/` were encoded by `j2k-native` itself
 from synthetic samples, so they carry no third-party content:
@@ -23,15 +34,15 @@ from synthetic samples, so they carry no third-party content:
 
 Without them, random input rarely parses as a codestream at all.
 
-`../fixtures/large_geometry/` supplies additional independently encoded long
-images for this target. Include that directory as a read-only seed corpus in
-large-coordinate fuzz runs; its codestreams exercise region decode even though
-their whole-image area exceeds the fuzz target's cutoff.
+`../fixtures/large_geometry/` has more long images, encoded independently.
+Add that directory as a read-only seed corpus for large-coordinate runs: its
+codestreams exercise region decoding even though their whole-image area is
+over the target's cutoff.
 
 The three synthetic inputs in `corpus/lossless_roundtrip_fuzz/` select classic
 8×8 grayscale at 8 bits (1 level), HTJ2K 16×16 RGB at 16 bits (2 levels,
 MCT, RPCL, SOP and EPH), and classic 33×25 RGB at 8 bits (3 levels, PCRL,
 4×4 code-blocks and differing reference-grid precinct spans). Their trailing
-ASCII bytes supply the samples. These seeds exceed the ten-byte header so the
-512-run CI smoke test exercises both encoder paths and multi-precinct packet
-ordering immediately; an empty corpus only reaches eight-byte inputs.
+ASCII bytes supply the samples. They are longer than the ten-byte header, so
+even the 512-run CI smoke test exercises both encoders and multi-precinct
+packet ordering; an empty corpus only reaches eight-byte inputs.

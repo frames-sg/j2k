@@ -1,40 +1,31 @@
-# j2k-c: C and C++ API
+# J2K C
 
-A CPU C ABI, a C++17 ownership wrapper, and relocatable native binary packages
-for the `j2k` JPEG 2000 / HTJ2K codec, including an explicit core whole-image
-decode route. It inspects headers, components, and the reference grid; keeps
-one decoder across codestreams and reports their compressed transfer syntax;
-decodes full images, regions, and reduced resolutions into caller-owned
-buffers; streams full images row by row through a callback without a
-whole-image buffer; reports the colour specification and ICC profile decoding
-applies; and encodes interleaved samples, losslessly or lossy to rate, size, or
-PSNR targets, with progression, tile, marker, and quality-layer control
-(classic or HTJ2K, raw, JP2, or JPH with an optional ICC profile). Output
-preserves native U8/U16/I16 sample values with explicit precision and alpha
-metadata. Decoders are strict by default or lenient on request, and run on the
-codec's shared CPU pool or on their own threads. Packages include CMake and
-pkg-config files; Cargo also emits a static archive for consumers that link the
-C ABI statically. GPU decode and slide-container readers are not exposed.
+> C and C++ API for [J2K](https://github.com/frames-sg/j2k)
 
-The additive exact-operation API plans regions at reductions 0–31 and offers
-explicit eight-bit sRGB output. Native and raw sRGB exact operations support
-per-operation working/output limits and cancellation, including the source
-preparation an operation performs itself. Existing ABI-1
-structures and the legacy 0–3 reduction API retain their layouts and behavior.
+[![license](https://shields.io/badge/license-MIT%2FApache--2.0-blue)](https://github.com/frames-sg/j2k#license)
 
-- [Consumer quickstart](docs/quickstart.md), also the package's `README.md`
-- [C ABI contract](docs/api.md)
-- [Supported configurations](docs/supported.md)
-- [Module boundaries](docs/architecture.md)
-- [Changelog](CHANGELOG.md)
+`j2k-c` is a C ABI over the `j2k` CPU codec, a header-only C++17 wrapper,
+and a script that packages both as a relocatable shared library with CMake
+and pkg-config files, plus a static archive. Applications that consume the
+package need no Rust toolchain.
 
-## Build and use
+It inspects headers, components and the reference grid; keeps one decoder
+across codestreams and reports their compressed transfer syntax; decodes full
+images, regions and reduced resolutions into buffers you own, in the image's
+native `uint8`, `uint16` or `int16` samples, through the batch route or the
+core whole-image route; streams full images row by row through a callback;
+converts regions to 8-bit sRGB; and encodes interleaved samples losslessly or
+lossy to a rate, size or PSNR target, as a raw codestream, JP2 or JPH. GPU decoding and slide-container readers are not part of this API.
 
-Use the workspace's pinned Rust toolchain, Python 3, and CMake 3.20+. From the
-repository root:
+The crate isn't published to crates.io. It ships as the native package that
+`scripts/package.py` builds.
+
+## Usage
+
+With the workspace's pinned Rust toolchain, Python 3 and CMake 3.20 or newer,
+from the repository root:
 
 ```sh
-cargo test -p j2k-c --locked
 python3 crates/j2k-c/scripts/package.py --output dist/j2k-c
 cmake -S dist/j2k-c/examples -B target/examples -DCMAKE_PREFIX_PATH="$PWD/dist/j2k-c"
 cmake --build target/examples
@@ -42,23 +33,27 @@ target/examples/j2k_decode image.jp2
 target/examples/j2k_decode_cpp image.jp2
 ```
 
-The default build produces the shared library and `libj2k_c.a`. The package
-contains headers, the versioned shared library, the static archive
-`lib/libj2k.a`, CMake configuration, examples, documentation, and license
-notices for the packages the library links. Consumers of the binary package
-need no Rust toolchain. Packaging uses the host
-target and supports macOS and GNU/Linux; it does not cross-compile, and it
+The package holds the headers, the shared library, the static archive
+`lib/libj2k.a`, CMake and pkg-config files, the examples, these docs, and
+license notices for every package the library links or builds with.
+Packaging builds for the host (macOS or GNU/Linux), doesn't cross-compile, and
 refuses to overwrite an existing output directory.
 
-Applications use `find_package(J2K CONFIG REQUIRED)` and link
-`J2K::j2k`, or `J2K::j2k_static` for the archive. The C interface is
-`include/j2k.h`; C++17 callers can use `j2k::decoder` from `include/j2k.hpp`.
+Applications call `find_package(J2K CONFIG REQUIRED)` and link `J2K::j2k`, or
+`J2K::j2k_static` for the static archive. C code includes `j2k.h`; C++17 code
+can use `j2k::decoder` from `j2k.hpp`.
 
-## Checks
+- [Quickstart](docs/quickstart.md), which is also the package's `README.md`
+- [API reference](docs/api.md)
+- [Supported configurations](docs/supported.md)
+- [Module layout](docs/architecture.md), for contributors
+- [Release notes](https://github.com/frames-sg/j2k/releases)
 
-Rust tests cover adapter behavior; the native consumer tests cover the ABI and
-the C++ wrapper against an installed package. Before changing the ABI or
-packaging, run:
+## Development
+
+Rust tests cover the adapter. The native consumer tests build C and C++
+programs against an assembled package. Before changing the ABI or packaging,
+run:
 
 ```sh
 cargo clippy -p j2k-c --lib --locked -- -D warnings
@@ -71,11 +66,19 @@ cmake --build target/native-tests
 ctest --test-dir target/native-tests --output-on-failure
 ```
 
-Keep the C header, Rust ABI definitions, examples, and contract documentation in
-sync. Changes to supported formats, limits, or sample handling update
-`docs/supported.md` and `CHANGELOG.md`. Preserve ABI-1 layouts and ownership
-rules; an incompatible change needs a new ABI revision. Keep raw pointers in
-`src/ffi.rs`, with a safety explanation on each unsafe block.
+The native tests also need pkg-config.
 
-Licensed under either of the workspace's [MIT](../../LICENSE-MIT) or
-[Apache-2.0](../../LICENSE-APACHE) licenses at your option.
+Keep `include/j2k.h`, the Rust ABI definitions in `src/abi.rs`, the examples
+and `docs/api.md` in step. A change to supported formats, limits or sample
+handling updates `docs/supported.md` and gets an entry in the root
+[`CHANGELOG.md`](../../CHANGELOG.md). ABI 1 layouts and ownership rules don't
+change in place: an incompatible change needs a new ABI revision. Raw pointers
+stay in `src/ffi.rs`, with a safety comment on each unsafe block.
+
+<!-- j2k-crate-footer -->
+
+---
+
+Part of [J2K](https://github.com/frames-sg/j2k), a JPEG 2000 and HTJ2K codec
+for Rust. See the [J2K Book](https://github.com/frames-sg/j2k/tree/main/book)
+and the [API documentation](https://docs.rs/j2k).

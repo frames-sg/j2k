@@ -44,7 +44,7 @@ struct ForbiddenArchitectureEdge {
 #[test]
 fn architecture_dependency_graph_matches_cargo_metadata() {
     let metadata_edges = cargo_metadata_workspace_graph().edges;
-    let docs = fs::read_to_string(repo_root().join("docs/architecture.md"))
+    let docs = fs::read_to_string(repo_root().join("contributor-book/architecture.md"))
         .expect("read architecture docs");
     let docs_edges = architecture_doc_dependency_edges(&docs);
 
@@ -59,7 +59,7 @@ fn architecture_dependency_graph_matches_cargo_metadata() {
 
     assert!(
         missing.is_empty() && extra.is_empty(),
-        "docs/architecture.md crate dependency graph drifted from cargo metadata\n\
+        "contributor-book/architecture.md crate dependency graph drifted from cargo metadata\n\
          missing from docs: {missing:#?}\n\
          not in cargo metadata: {extra:#?}"
     );

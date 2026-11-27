@@ -2,7 +2,9 @@
 
 //! YCbCr → RGB conversion. Scalar implementation uses libjpeg-turbo's 16-bit
 //! fixed-point coefficients (`jdcolor.c`), so outputs match their ISLOW path
-//! byte-for-byte.
+//! byte-for-byte. `jdcolor.c` is Copyright (C) 1991-1997, Thomas G. Lane, with
+//! libjpeg-turbo modifications; see `LICENSE.libjpeg-turbo` and `README.ijg`
+//! in this crate.
 //!
 //! Coefficients (all × 2^16, rounded):
 //!     R = Y                        + 1.40200 * (Cr - 128)

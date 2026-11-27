@@ -1,4 +1,6 @@
-HTJ2K fixtures for shared test support.
+# HTJ2K fixtures
+
+HTJ2K fixtures shared by the workspace tests.
 
 These fixtures mirror the tiny OpenHTJ2K-derived HTONLY codestream fixtures in
 `crates/j2k-native/fixtures/htj2k/`. They are copied from OpenHTJ2K commit
@@ -40,13 +42,13 @@ the decoder executable SHA-256 was
 `483c92fa604823f98d899642367f68a1ae62a91276600aeb68cdfbaddbcd0fa4`.
 
 OpenJPH 0.27.0 produces a materially different result for this deliberately
-overlapping refinement stream: 305 of its output bytes differ from OpenHTJ2K
+overlapping refinement stream: 290 of its output bytes differ from OpenHTJ2K
 by more than one LSB. That output is retained as
 `.openjph.oracle.raw` (SHA-256
 `dddeda5af064c87abfce577ea1e6c2d714c203cef87ebb5bd3bf2507efe052b0`)
-as cross-decoder evidence, but is not used as the correctness oracle for this
-OpenHTJ2K-specific edge case. The independent `hifi_ht1_02` fixture above and
-the `openjph_batch/` corpus continue to provide OpenJPH parity coverage.
+for comparison, but it is not the expected output for this OpenHTJ2K-specific
+edge case. The independent `hifi_ht1_02` fixture above and the
+`openjph_batch/` corpus cover parity with OpenJPH.
 
 The OpenHTJ2K BSD 3-Clause license is retained in `LICENSE.OpenHTJ2K`.
 

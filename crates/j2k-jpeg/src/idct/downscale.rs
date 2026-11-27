@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Reduced-size ISLOW IDCTs derived from libjpeg-turbo's `jidctred.c`. The
-//! maths is `j2k_codec_math::jpeg::idct`; these are the CPU entry points.
+//! Reduced-size ISLOW IDCTs derived from libjpeg-turbo's `jidctred.c`
+//! (Copyright (C) 1994-1998, Thomas G. Lane; libjpeg-turbo modifications
+//! Copyright (C) 2015, 2022, 2026, D. R. Commander). The maths is
+//! `j2k_codec_math::jpeg::idct`; these are the CPU entry points. See
+//! `LICENSE.libjpeg-turbo` and `README.ijg` in this crate.
 
 use j2k_codec_math::jpeg::idct;
 

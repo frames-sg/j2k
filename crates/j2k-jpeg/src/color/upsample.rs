@@ -12,6 +12,10 @@
 //! to the nearest (replicate) so the filter always has valid taps. The 4:2:2
 //! path alternates `+1`/`+2` quarter-sample rounding biases, matching
 //! libjpeg-turbo's ordered-dither rule instead of biasing every half-tie up.
+//!
+//! Attribution: the filters follow libjpeg-turbo's `jdsample.c` (Copyright
+//! (C) 1991-1996, Thomas G. Lane, with libjpeg-turbo modifications). See
+//! `LICENSE.libjpeg-turbo` and `README.ijg` in this crate.
 
 /// Identity upsample: one output row is the input row unchanged. Output width
 /// equals input width. Used for 4:4:4 where no upsample is needed.

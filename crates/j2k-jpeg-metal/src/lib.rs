@@ -6,9 +6,9 @@
 //! `j2k-jpeg`, with optional Metal-resident surfaces and batch submission
 //! helpers on macOS. Non-macOS builds return `Error::MetalUnavailable`.
 //!
-//! The 0.9 expert surface uses `objc2-metal` directly. Owned Metal objects are
-//! retained protocol objects and borrowed buffers or textures are
-//! protocol-object references; the former `metal-rs` API is not preserved.
+//! The expert API uses `objc2-metal` directly. Owned Metal objects are
+//! retained protocol objects, and borrowed buffers or textures are
+//! protocol-object references. `metal-rs` types are not accepted.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(unreachable_pub)]

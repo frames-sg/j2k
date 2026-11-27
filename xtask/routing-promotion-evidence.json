@@ -63,6 +63,7 @@
     {"source":"cuda_part15","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossless","payload_kind":"JphFile","operation":"ScaledHalf","minimum_width":384,"minimum_height":256,"minimum_pixels":0,"minimum_count":1},
     {"source":"cuda_part15","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossless","payload_kind":"JphFile","operation":"Repeated","minimum_width":768,"minimum_height":512,"minimum_pixels":0,"minimum_count":16}
   ],
+  "cuda_host_output": [],
   "metal_decode": [
     {"source":"metal_local_combined","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossless","payload_kind":"Jpeg2000Codestream","operation":"Repeated","minimum_width":256,"minimum_height":256,"minimum_pixels":65536,"minimum_count":16},
     {"source":"metal_local_combined","source_components":3,"format":"Rgb8","transfer_syntax":"HtJpeg2000Lossless","payload_kind":"JphFile","operation":"Repeated","minimum_width":640,"minimum_height":480,"minimum_pixels":307200,"minimum_count":16},

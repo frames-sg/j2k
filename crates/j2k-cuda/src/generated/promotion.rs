@@ -232,3 +232,15 @@ pub(crate) const PROMOTION_CELLS: &[PromotionCell] = &[
         CUDA_PART15,
     ),
 ];
+
+const HOST_OUTPUT_CELLS: &[(u16, u32, u32, &str)] = &[];
+
+/// Whether `Auto` sends a host-output lossless encode of this shape to CUDA.
+pub(crate) fn auto_host_output_encode_qualifies(components: u16, width: u32, height: u32) -> bool {
+    HOST_OUTPUT_CELLS.iter().any(|cell| {
+        cell.0 == components
+            && cell.1 == width
+            && cell.2 == height
+            && SOURCE_EVIDENCE.contains(&cell.3)
+    })
+}

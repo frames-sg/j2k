@@ -8,7 +8,7 @@ Generator: `cargo-public-api 0.52.0`.
 Rustdoc toolchain: `nightly-2026-08-13`.
 Target: `aarch64-apple-darwin`.
 
-It is the item-level companion to `docs/stable-api-1.0.md`: every public module, type, trait, function, method, constant, variant, and field reported here is semver-visible unless moved private before 1.0. Rustdoc-hidden items are tracked separately in `xtask/api/stable-api-1.0.implementation-public-api.txt`.
+It is the item-level companion to `book/stability.md`: every public module, type, trait, function, method, constant, variant, and field reported here is semver-visible unless moved private before 1.0. Rustdoc-hidden items are tracked separately in `xtask/api/stable-api-1.0.implementation-public-api.txt`.
 
 ## `j2k`
 
@@ -5606,4 +5606,4 @@ pub unsafe fn j2k_mpsgraph_support::MpsGraphSubmission<InputOwner>::submit(&objc
 
 ## `j2k-cli`
 
-`j2k-cli` is a binary package. Its stable command, stdout/stderr, and exit-code contract is documented in `docs/stable-api-1.0.md`.
+`j2k-cli` is a binary package. Its stable command, stdout/stderr, and exit-code contract is documented in `book/stability.md`.

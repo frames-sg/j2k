@@ -426,7 +426,7 @@ fn render_stable_api_snapshots() -> Result<(String, String), String> {
          Generator: `{tool_version}`.\n\n\
          Rustdoc toolchain: `{PUBLIC_API_TOOLCHAIN}`.\n\
          Target: `{PUBLIC_API_TARGET}`.\n\n\
-         It is the item-level companion to `docs/stable-api-1.0.md`: every \
+         It is the item-level companion to `book/stability.md`: every \
          public module, type, trait, function, method, constant, variant, and \
          field reported here is semver-visible unless moved private before 1.0. \
          Rustdoc-hidden items are tracked separately in `{HIDDEN_API_SNAPSHOT}`.\n"
@@ -482,7 +482,7 @@ fn render_stable_api_snapshots() -> Result<(String, String), String> {
         &mut public_out,
         "## `j2k-cli`\n\n\
          `j2k-cli` is a binary package. Its stable command, stdout/stderr, \
-         and exit-code contract is documented in `docs/stable-api-1.0.md`.\n"
+         and exit-code contract is documented in `book/stability.md`.\n"
     )
     .unwrap();
 

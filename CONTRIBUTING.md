@@ -1,93 +1,109 @@
-# Contributing
+# Contributing to J2K
 
-Contributions should keep the workspace focused on practical JPEG 2000 / HTJ2K
-codec infrastructure: safe parsing, predictable decode and encode behavior,
-caller-owned scratch/context reuse, optional GPU acceleration where it is
-measured to help, and reproducible benchmarks. Whole-slide imaging workloads are
-important stress cases, but the public APIs are general codec APIs.
+Thanks for your interest in J2K. Bug reports, fixes, test images that break
+the decoder, performance work, and documentation improvements are all welcome.
 
-## Development Setup
+J2K aims to be practical JPEG 2000 and HTJ2K infrastructure: safe parsing,
+predictable decode and encode behavior, buffer and context reuse for
+high-throughput callers, GPU acceleration where it measurably helps, and
+benchmarks anyone can reproduce. Whole-slide imaging and other huge tiled
+images are important stress cases, but the APIs are general-purpose.
 
-Use the Rust toolchain pinned by `rust-toolchain.toml`.
+## How to contribute
 
-```sh
-cargo xtask fmt
-cargo xtask clippy
-cargo xtask test
-cargo xtask doc
-```
+Look through the [open issues](https://github.com/frames-sg/j2k/issues).
+Issues labelled `good first issue` are a good place to start.
 
-Comparator benchmarks may need optional system libraries. Benchmark rules are
-in [`xtask/BENCHMARKS.md`](xtask/BENCHMARKS.md).
+If you want to work on something that doesn't have an issue yet, open one
+first and describe the problem, especially for larger changes. It's much
+easier to agree on an approach before the code is written.
 
-## Pull Requests
+The [contributor book](contributor-book/README.md) covers the architecture,
+environment setup, testing, benchmarks, and releases.
 
-- Keep changes scoped to one codec, adapter, or documentation topic when
-  possible.
-- Add or update behavior-focused tests for decode, API, or data-flow changes.
-- Do not remove passing regression tests as cleanup.
-- Avoid hardcoded secrets, credentials, or local machine paths.
-- Return an error for unsupported inputs and backend failures; do not add
-  silent fallbacks.
-- Run the relevant tests before opening a PR, and the workspace checks above
-  before changes that affect a release.
+## Pull requests
 
-## GPU Validation
+Give each pull request a descriptive title and a short description of the
+problem, the fix, and how you tested it, with a link to the issue if there is
+one. A few sentences are enough for a small change. Prefer small, focused pull
+requests over large ones that bundle unrelated changes.
 
-The GPU validation workflow only runs on `workflow_dispatch`, not on
-`pull_request` or `push`, because it uses paid self-hosted CUDA and Metal
-runners.
+### Titles and commit messages
 
-Pull requests that touch CUDA, Metal, shared GPU-profile paths, or
-`.github/workflows/gpu-validation.yml` must record a successful manual
-`gpu-validation.yml` dispatch for the PR head SHA before merge. The normal CI
-planner checks the PR diff, queries `gpu-validation.yml` runs by head SHA, and
-fails until the required quick backend job names have succeeded:
+Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) for
+pull request titles: `type(scope): description`, for example
+`fix(native): stop an open-ended tile part at EOC`. The scope is optional.
+Mark changes that break the latest published release with `!` before the
+colon, and explain the migration in the description.
 
-- `CUDA quick validation` for CUDA or shared GPU changes.
-- `Metal quick validation` for Metal or shared GPU changes.
+### Before you open a pull request
 
-Successful GPU validation automatically retries failed jobs in the latest PR checks run for that exact head SHA if its GPU evidence job failed.
-This includes fork PRs validated through a maintainer review branch.
+1. Run the checks:
 
-A release candidate needs one `target=all`, `mode=full` dispatch for its exact
-commit in which `CUDA full release validation` and `Metal full release
-validation` both succeed. Performance and profiling runs go in the separate
-`gpu-benchmarks.yml` workflow so they do not compete with validation.
+   ```bash
+   cargo xtask fmt
+   cargo xtask clippy
+   cargo xtask test
+   cargo xtask doc
+   ```
 
-Hosted macOS CI runs `cargo xtask metal-compile`, which only compiles and runs
-the tests that need no GPU. The self-hosted Metal job runs
-`cargo xtask release-metal` with either `--mode quick` or `--mode full`. It
-fails on skipped runtime tests or a missing Metal device.
+2. Add or update tests. Bug fixes need a regression test. Prefer tests that
+   check behavior (decoded samples, errors, output bytes) over tests that pin
+   implementation details.
+3. Add a changelog entry if users will notice the change (see
+   [Changelog](#changelog)).
+4. If you changed a CUDA or Metal crate or anything they depend on, the pull
+   request needs a GPU validation run before it can merge. Maintainers trigger
+   it; [CI and GPU validation](contributor-book/ci.md) explains when it's
+   required.
+5. If you changed a public API, update the API snapshots as described in
+   [Public API changes](contributor-book/public-api.md).
 
-Do not add `pull_request` or `push` triggers to `gpu-validation.yml` without
-agreeing on it first.
+### Code guidelines
 
-## Public API Changes
+- Follow the style of the surrounding code.
+- Unsupported input and backend failures return errors. Don't add silent
+  fallbacks, and never let an explicitly requested GPU backend quietly run on
+  the CPU.
+- Keep dependencies minimal, and discuss new ones in the issue first.
+- Every `unsafe` block needs a `// SAFETY:` comment explaining why it's sound.
+- Don't remove passing regression tests as cleanup.
+- Don't commit secrets, credentials, or paths from your machine. Tests and
+  benchmarks read external data locations from environment variables.
 
-Changes to ROI, scaled decode, tile-batch, row-streaming, context, scratch-pool, or device
-surface behavior should update:
+### Change ownership
 
-- README quick-start or examples when user-facing behavior changes
-- API docs for affected public items
-- integration tests covering caller-visible behavior
-- `xtask/BENCHMARKS.md` when benchmark methodology changes
-- `xtask/api/stable-api-1.0.public-api.txt` and
-  `xtask/api/stable-api-1.0.implementation-public-api.txt`, regenerated together
-  with `cargo xtask stable-api --write`, when public items change
-- `docs/public-support.md`, checked with `cargo xtask public-support`, when
-  codec support changes
-- `cargo xtask semver` for the stable published libraries
+You must understand and be able to explain every change in your pull request,
+whether you wrote it yourself, adapted it from another project, or used an AI
+tool to help. Using AI tools is fine. You're still the author, so read and
+test what you submit, and edit generated text down to what's accurate and
+necessary. Mention in the description if an agent did most of the work.
 
-A pull request that can change a published crate's API runs the `Public API
-review` job, which runs `cargo xtask stable-api` and `cargo xtask semver` on
-hosted macOS. Update the snapshots and the reviewed API evidence in the same
-pull request, so the change is reviewed before it reaches `main`.
+### Review
 
-## Releases
+Maintainers review pull requests as time allows. Please respond to feedback,
+or explain your reasoning if you disagree, and don't force-push during an
+active review without saying so. A pull request with no response from its
+author for 14 days may be closed.
 
-The release process and its required checks are in
-[`xtask/RELEASING.md`](xtask/RELEASING.md).
+## Changelog
 
-Publish `j2k-mpsgraph-support` before using it in a registry-only build of the
-JPEG XR consumer. Local Cargo source patches validate development changes only.
+User-visible changes get an entry under `Unreleased` in
+[CHANGELOG.md](CHANGELOG.md) in the same pull request. That includes API and
+behavior changes, new features, bug fixes users could notice, output that
+changes bytes, and notable performance changes. Refactors, test-only changes,
+and doc fixes don't need entries. The
+[changelog guide](contributor-book/documentation.md#changelog) has the
+details.
+
+## Documentation
+
+User documentation lives in the [J2K Book](book/README.md) and contributor
+documentation in the [contributor book](contributor-book/README.md). Before
+writing docs, read [Writing documentation](contributor-book/documentation.md).
+It explains where things go and the style we use.
+
+## Getting help
+
+If you're stuck, open an issue and ask. Report security problems privately as
+described in [SECURITY.md](SECURITY.md), not in a public issue.

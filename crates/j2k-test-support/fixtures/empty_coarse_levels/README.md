@@ -1,4 +1,4 @@
-# Empty coarse levels fixtures
+# Empty coarse-level fixtures
 
 Two small images with two decomposition levels whose last tile row (and, in
 the RGB image, column) is one sample at an odd position. That tile's two

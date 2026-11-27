@@ -211,6 +211,7 @@ jobs:
         with:
           toolchain: stable
       - run: cargo xtask codec-math-codegen
+      - run: cargo xtask promotion-codegen --check
 
   public-support-final:
     runs-on: ubuntu-latest

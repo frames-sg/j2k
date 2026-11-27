@@ -132,12 +132,13 @@ impl CudaDecoder {
         Ok(decoded)
     }
 
+    /// Decode one image and return its tensor with the row's warnings.
     pub fn decode_one(
         &self,
         py: Python<'_>,
         bytes: &[u8],
         request: DecodeRequest,
-    ) -> PyResult<Tensor> {
+    ) -> PyResult<(Tensor, Vec<String>)> {
         let input = EncodedImage::new(Arc::from(bytes), request);
         let prepared = py.detach(|| {
             self.decoder
@@ -155,7 +156,7 @@ impl CudaDecoder {
             ));
         }
         self.decode_group(py, Group::Prepared(&prepared.groups()[0]), true)
-            .map(|group| group.tensor)
+            .map(|group| (group.tensor, group.warnings.into_iter().flatten().collect()))
     }
 
     fn decode_group(

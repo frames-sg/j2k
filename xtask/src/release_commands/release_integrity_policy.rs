@@ -23,76 +23,67 @@ impl ReleaseIntegrityMode {
     }
 }
 
+/// `CHANGELOG.md` holds only the changes for the next release. Published
+/// release notes live on GitHub Releases, so the file has exactly one
+/// `## Unreleased` heading and no version headings. A publish also needs at
+/// least one entry under `Unreleased`, so a release can't go out without notes.
 pub(super) fn validate_changelog_state(
     changelog: &str,
     version: &str,
     mode: ReleaseIntegrityMode,
 ) -> Result<(), String> {
     let markdown_lines = markdown_content_lines(changelog);
-    let version_marker = format!("## [{version}");
+
+    let unreleased_count = exact_line_count(&markdown_lines, UNRELEASED_HEADING);
+    if unreleased_count != 1 {
+        return Err(format!(
+            "expected exactly one `{UNRELEASED_HEADING}` heading; found {unreleased_count}"
+        ));
+    }
+
     let version_headings = markdown_lines
         .iter()
         .copied()
-        .filter(|line| line.starts_with(&version_marker))
+        .filter(|line| is_version_heading(line))
         .collect::<Vec<_>>();
-
-    if mode == ReleaseIntegrityMode::Publish || !version_headings.is_empty() {
-        return validate_versioned_changelog(&markdown_lines, version, &version_headings, mode);
+    if !version_headings.is_empty() {
+        return Err(format!(
+            "release sections belong in GitHub Releases, not the changelog; remove {}",
+            version_headings
+                .iter()
+                .map(|heading| format!("`{heading}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
 
-    let unreleased_count = exact_line_count(&markdown_lines, "## [Unreleased]");
-    let staged_version = format!("Staged workspace version: `{version}`.");
-    let staged_count = exact_line_count(&markdown_lines, &staged_version);
-    if unreleased_count == 1 && staged_count == 1 {
-        Ok(())
-    } else {
-        Err(format!(
-            "pre-candidate state requires exactly one `## [Unreleased]` heading and one `{staged_version}` line; found {unreleased_count} and {staged_count}"
-        ))
+    if mode == ReleaseIntegrityMode::Publish {
+        let has_entry =
+            markdown_section(&markdown_lines, UNRELEASED_HEADING).is_some_and(|section| {
+                section
+                    .iter()
+                    .any(|line| !line.trim().is_empty() && markdown_heading_level(line).is_none())
+            });
+        if !has_entry {
+            return Err(format!(
+                "`{UNRELEASED_HEADING}` has no entries to publish as the {version} release notes"
+            ));
+        }
     }
+    Ok(())
 }
 
-fn validate_versioned_changelog(
-    markdown_lines: &[&str],
-    version: &str,
-    version_headings: &[&str],
-    mode: ReleaseIntegrityMode,
-) -> Result<(), String> {
-    if version_headings.len() != 1 {
-        return Err(format!(
-            "publish state requires exactly one `## [{version}] - YYYY-MM-DD` heading; found {}",
-            version_headings.len()
-        ));
-    }
+const UNRELEASED_HEADING: &str = "## Unreleased";
 
-    let prefix = format!("## [{version}] - ");
-    let Some(date) = version_headings[0].strip_prefix(&prefix) else {
-        return Err(format!(
-            "publish heading must be exactly `## [{version}] - YYYY-MM-DD`"
-        ));
-    };
-    if !is_calendar_date(date) {
-        return Err(format!(
-            "publish heading date `{date}` is not a calendar-valid YYYY-MM-DD date"
-        ));
-    }
-
-    let staged_version = format!("Staged workspace version: `{version}`.");
-    let unreleased_count = exact_line_count(markdown_lines, "## [Unreleased]");
-    let staged_count = exact_line_count(markdown_lines, &staged_version);
-    match mode {
-        ReleaseIntegrityMode::Publish if unreleased_count != 0 || staged_count != 0 => Err(
-            format!(
-                "publish state must not retain provisional Unreleased or staged-version markers; found {unreleased_count} and {staged_count}"
-            ),
-        ),
-        ReleaseIntegrityMode::PreCandidate if unreleased_count > 1 || staged_count != 0 => Err(
-            format!(
-                "versioned changelog state permits at most one `## [Unreleased]` heading and no `{staged_version}` line; found {unreleased_count} and {staged_count}"
-            ),
-        ),
-        _ => Ok(()),
-    }
+/// A level-2 heading naming a release, such as `## [0.7.0] - 2026-07-10`,
+/// `## 0.7.0`, or `## v0.7.0`.
+fn is_version_heading(line: &str) -> bool {
+    line.strip_prefix("## ").is_some_and(|title| {
+        title
+            .trim_start_matches('[')
+            .trim_start_matches('v')
+            .starts_with(|character: char| character.is_ascii_digit())
+    })
 }
 
 pub(super) fn validate_patch_provenance(provenance: &str) -> Result<(), String> {
