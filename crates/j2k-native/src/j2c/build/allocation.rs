@@ -177,6 +177,22 @@ impl DecompositionAllocationPlan {
         }
     }
 
+    /// Coefficient capacity reserved for `storage.coefficients`. In the
+    /// component layout, rounding up to `SIMD_WIDTH` (at most 7 floats) lets
+    /// `PaddedVec::adopt_samples` / `swap_samples` adopt the coefficient buffer
+    /// zero-copy even when `width * height` is not a multiple of `SIMD_WIDTH`.
+    pub(super) fn coefficient_storage_capacity(&self) -> usize {
+        let len = self.coefficient_storage_len();
+        if self.workspace.coefficient_layout() == CoefficientLayout::Component
+            && !self.exact_integer_decode
+        {
+            len.checked_next_multiple_of(crate::math::SIMD_WIDTH)
+                .unwrap_or(len)
+        } else {
+            len
+        }
+    }
+
     fn plans_idwt_workspace(&self) -> bool {
         matches!(self.workspace, BuildWorkspace::DecodePixels { .. }) && !self.defer_coefficients
     }
@@ -230,7 +246,7 @@ impl DecompositionAllocationPlan {
         checked_include_elements::<CodeBlock>(&mut total_bytes, self.parse_only_code_blocks)?;
         checked_include_elements::<TagNode>(&mut total_bytes, self.parse_only_tag_tree_nodes)?;
         self.include_unbuilt_precincts(&mut total_bytes)?;
-        checked_include_elements::<f32>(&mut total_bytes, self.coefficient_storage_len())?;
+        checked_include_elements::<f32>(&mut total_bytes, self.coefficient_storage_capacity())?;
         if self.exact_integer_decode {
             checked_include_elements::<i64>(&mut total_bytes, self.coefficient_storage_len())?;
         }
@@ -302,7 +318,7 @@ impl DecompositionAllocationPlan {
         checked_include_reusable_elements::<f32>(
             &mut total_bytes,
             storage.coefficients.capacity(),
-            self.coefficient_storage_len(),
+            self.coefficient_storage_capacity(),
         )?;
         checked_include_reusable_elements::<i64>(
             &mut total_bytes,

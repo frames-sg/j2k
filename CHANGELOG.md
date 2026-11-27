@@ -9,6 +9,11 @@ To add an entry, see [the changelog guide](contributor-book/documentation.md#cha
 
 ### Decoding
 
+- Fused last-level CPU IDWT now applies when `width * height` is not a
+  multiple of `SIMD_WIDTH` (8), reserving at most 7 floats of tail padding
+  in component-layout coefficient buffers instead of falling back to staged
+  plane storage. ([#346](https://github.com/frames-sg/j2k/issues/346))
+
 - Lossless encodes can hold more than 512 MiB of host memory in one phase
   when the caller asks for it, for images such as 4096 x 4096 RGBA and
   larger. `J2kLosslessEncodeOptions::max_host_allocation_bytes` (and

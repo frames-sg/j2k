@@ -24,7 +24,10 @@ pub(super) fn discard_stale_capacity(
     release_capacity_above(&mut storage.code_blocks, plan.code_blocks);
     release_capacity_above(&mut storage.layers, plan.layers);
     release_capacity_above(&mut storage.tag_tree_nodes, plan.tag_tree_nodes);
-    release_capacity_above(&mut storage.coefficients, plan.coefficient_storage_len());
+    release_capacity_above(
+        &mut storage.coefficients,
+        plan.coefficient_storage_capacity(),
+    );
     let integer_target = usize::from(storage.exact_integer_decode) * plan.coefficient_storage_len();
     release_capacity_above(&mut storage.coefficients_i64, integer_target);
 }
@@ -183,17 +186,19 @@ pub(super) fn reserve_decomposition_storage(
     budget.reserve(&mut storage.layers, plan.layers)?;
     budget.reserve(&mut storage.tag_tree_nodes, plan.tag_tree_nodes)?;
     let coefficients = plan.coefficient_storage_len();
+    let coefficient_capacity = plan.coefficient_storage_capacity();
     // Packet parsing never reads the coefficients, so a decode that may zero
     // them beside it (see `DecompositionStorage::defer_coefficient_zeroing`)
     // only reserves them, unless a new allocation would come zeroed anyway.
     if storage.defer_coefficient_zeroing
-        && (storage.coefficients.capacity() >= coefficients
+        && (storage.coefficients.capacity() >= coefficient_capacity
             || !crate::fresh_decode_buffers_come_zeroed())
     {
-        budget.reserve(&mut storage.coefficients, coefficients)?;
+        budget.reserve(&mut storage.coefficients, coefficient_capacity)?;
         storage.unzeroed_coefficients = coefficients;
     } else {
-        budget.reserve_zeroed(&mut storage.coefficients, coefficients)?;
+        budget.reserve_zeroed(&mut storage.coefficients, coefficient_capacity)?;
+        storage.coefficients.truncate(coefficients);
     }
     if storage.exact_integer_decode {
         budget.reserve(
