@@ -4,6 +4,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "metal")]
+use crate::abi::J2K_DECODE_FAILED;
 use crate::{
     abi::{
         J2kCColorInfo, J2kCCompleteness, J2kCComponentInfo, J2kCDecodeOptions, J2kCImageInfo,
@@ -16,12 +18,16 @@ use crate::{
     },
     error::{Error, Result},
 };
+#[cfg(feature = "metal")]
+use j2k::BackendRequest;
 use j2k::{
     BatchAlpha, BatchDecodeOptions, BatchLayout, CompressedTransferSyntax, CpuBatchDecoder,
     CpuBatchSamples, DecodeRequest, DecodeSettings, Downscale, EncodedImage, J2kColorSpec,
     J2kDecodeControl, J2kDecodeWarning, J2kDecoder, J2kReferenceGrid, J2kSupportInfo,
     NativeSampleType, PixelFormat, PreparedBatch, Rect,
 };
+#[cfg(feature = "metal")]
+use j2k_metal::MetalBackendSession;
 use std::{num::NonZeroUsize, sync::Arc};
 
 const DEFAULT_LIMIT: u64 = 512 * 1024 * 1024;
@@ -43,6 +49,10 @@ pub(crate) struct Decoder {
     max_output: u64,
     /// The input limit this decoder enforces on every feed; set at open.
     max_input: u64,
+    /// The persistent Metal session created by `j2k_decoder_metal_init` and
+    /// reused by every Metal decode on this decoder.
+    #[cfg(feature = "metal")]
+    metal: Option<MetalBackendSession>,
     pub(crate) poisoned: bool,
 }
 
@@ -126,12 +136,14 @@ impl Decoder {
                 options.max_output_bytes
             },
             max_input: Self::input_limit(options)?,
+            #[cfg(feature = "metal")]
+            metal: None,
             poisoned: false,
         })
     }
 
     /// Replace the codestream this decoder holds, keeping its
-    /// threads, session, settings, and limits. The new input is
+    /// threads, session, settings, limits, and Metal session. The new input is
     /// fully inspected before any state is replaced, so a failed feed keeps
     /// the previous codestream inspectable and decodable.
     pub(crate) fn feed(&mut self, input: &[u8]) -> Result<()> {
@@ -598,6 +610,103 @@ impl Decoder {
         }
         write_native_samples(group.samples(), *info, output, stride)
     }
+}
+
+#[cfg(feature = "metal")]
+impl Decoder {
+    /// Create the decoder's persistent Metal session. Idempotent;
+    /// `J2K_UNSUPPORTED` when Metal is unavailable on this host. Every
+    /// successful `metal_decode_full` call reuses this session.
+    pub(crate) fn metal_init(&mut self) -> Result<()> {
+        if self.metal.is_none() {
+            let session = MetalBackendSession::system_default()
+                .map_err(|error| Error::new(J2K_UNSUPPORTED, error.to_string()))?;
+            self.metal = Some(session);
+        }
+        Ok(())
+    }
+
+    /// Decode the full image at full resolution on the Metal GPU backend,
+    /// strictly without CPU fallback, into a caller-owned strided buffer. The
+    /// request must use the full image at reduction 0 and a layout the core
+    /// whole-image route represents. Decoding reuses the session created by
+    /// [`Self::metal_init`] and every failure leaves the output untouched.
+    pub(crate) fn metal_decode_full(
+        &mut self,
+        options: J2kCDecodeOptions,
+        output: &mut [u8],
+        stride: usize,
+    ) -> Result<J2kCOutputInfo> {
+        let info = self.output_info_native(options)?;
+        let required = self.output_span(info, stride)?;
+        if output.len() < required {
+            return Err(Error::new(
+                J2K_BUFFER_TOO_SMALL,
+                "output buffer is shorter than the requested strided image",
+            ));
+        }
+        let fmt = core_pixel_format(&info).ok_or_else(|| {
+            Error::new(
+                J2K_UNSUPPORTED,
+                "Metal decode does not represent this layout",
+            )
+        })?;
+        let session = self
+            .metal
+            .as_ref()
+            .ok_or_else(|| Error::new(J2K_UNSUPPORTED, "the Metal backend is not initialized"))?;
+        let bytes = Arc::clone(&self.bytes);
+        let request = j2k_metal::MetalDecodeRequest::full(fmt, BackendRequest::Metal);
+        // The whole-image route is raw-codestream-only: `output_info_native`
+        // rejects file-wrapped inputs, so `J2K_OPEN_LENIENT` metadata recovery
+        // cannot apply, and a partial codestream cannot satisfy a full-image
+        // request. Parse with the codec defaults.
+        let mut decoder =
+            j2k_metal::J2kDecoder::new(&bytes).map_err(|error| metal_error(&error))?;
+        let surface = decoder
+            .decode_request_to_device_with_session(request, session)
+            .map_err(|error| metal_error(&error))?;
+
+        // Download tightly packed rows first so a failed copy cannot leave the
+        // caller's destination partially written, then place each row without
+        // touching inter-row padding or trailing bytes.
+        let row_bytes = usize::try_from(info.row_bytes)
+            .map_err(|_| Error::internal("row size does not fit in usize"))?;
+        let height = usize::try_from(info.height)
+            .map_err(|_| Error::internal("image height does not fit in usize"))?;
+        let tight_len = row_bytes
+            .checked_mul(height)
+            .ok_or_else(|| Error::limit("output size overflow"))?;
+        let mut staging = Vec::new();
+        staging
+            .try_reserve_exact(tight_len)
+            .map_err(|_| Error::limit("could not allocate the Metal staging buffer"))?;
+        staging.resize(tight_len, 0);
+        surface
+            .download_into(&mut staging, row_bytes)
+            .map_err(|error| metal_error(&error))?;
+        for (row, samples) in staging.chunks_exact(row_bytes).enumerate() {
+            let start = row * stride;
+            output[start..start + row_bytes].copy_from_slice(samples);
+        }
+        Ok(info)
+    }
+}
+
+/// Map a Metal backend failure to the C ABI status codes.
+#[cfg(feature = "metal")]
+fn metal_error(error: &j2k_metal::Error) -> Error {
+    let message = error.to_string();
+    let code = match error {
+        j2k_metal::Error::Decode(source) => return Error::codec(source),
+        j2k_metal::Error::BatchInfrastructure(source) => return Error::infrastructure(*source),
+        j2k_metal::Error::Buffer(_) => J2K_BUFFER_TOO_SMALL,
+        j2k_metal::Error::UnsupportedBackend { .. }
+        | j2k_metal::Error::UnsupportedMetalRequest { .. }
+        | j2k_metal::Error::MetalUnavailable => J2K_UNSUPPORTED,
+        _ => J2K_DECODE_FAILED,
+    };
+    Error::new(code, message)
 }
 
 impl Decoder {

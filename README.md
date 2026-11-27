@@ -182,7 +182,7 @@ Most projects only need `j2k`. Add a GPU crate if you want GPU decoding.
 | Convert JPEG to HTJ2K                          | `j2k-transcode`, plus `j2k-transcode-cuda` or `j2k-transcode-metal` |
 | Feed decoded images to Burn or MPSGraph        | `j2k-ml`, `j2k-mpsgraph`                                     |
 | Decompress Deflate, Zstd, or LZW tiles (TIFF)  | `j2k-tilecodec`                                              |
-| Use J2K from Python, C, or C++                 | [`j2k` on PyPI](crates/j2k-python/README.md), [`j2k-c`](crates/j2k-c/README.md) |
+| Use J2K from Python, C, or C++                 | [`j2k` on PyPI](crates/j2k-python/README.md), [`j2k-c`](crates/j2k-c/README.md) (optional Metal decode) |
 | Use J2K from the shell                         | [`j2k-cli`](crates/j2k-cli/README.md)                        |
 
 The other `j2k-*` crates are building blocks shared by the ones above. The

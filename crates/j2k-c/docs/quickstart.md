@@ -146,6 +146,27 @@ decoder.decode_rows([&](uint32_t y, const uint8_t *row, size_t row_bytes) {
 `decoder.color_info()` and `decoder.icc_profile()` report the color
 specification that decoding applies.
 
+## Metal decode
+
+The prebuilt packages and the default build are CPU-only. To decode on an
+Apple GPU, build `j2k-c` from source with the `metal` feature (see the
+[C README](https://github.com/frames-sg/j2k/blob/main/crates/j2k-c/README.md)).
+`metal_init` creates one persistent session per decoder, and every Metal
+decode reuses it:
+
+```cpp
+j2k::decoder decoder(encoded.data(), encoded.size());
+auto info = decoder.output_info_native();
+std::vector<uint8_t> pixels(static_cast<size_t>(info.buffer_bytes));
+decoder.metal_init();
+decoder.metal_decode_into(pixels.data(), pixels.size(),
+                          static_cast<size_t>(info.row_bytes));
+```
+
+The request must be the full image at full resolution. The call never falls
+back to the CPU, and a failure leaves `pixels` untouched. On a host without
+Metal, `metal_init` throws a `j2k::error` carrying `J2K_UNSUPPORTED`.
+
 ## Encode
 
 `j2k::encode_lossless(samples, length, options)` encodes interleaved samples

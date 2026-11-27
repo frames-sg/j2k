@@ -300,7 +300,7 @@ public:
     }
 
     // Replace this decoder's codestream, keeping its threads,
-    // session, settings, and limits.
+    // session, settings, limits, and Metal session.
     void feed(const uint8_t *input, size_t length) {
         j2k_error detail{};
         check(j2k_decoder_feed(handle_, input, length, &detail), detail);
@@ -333,6 +333,25 @@ public:
                           const j2k_decode_options &options = J2K_DECODE_OPTIONS_INIT) {
         j2k_error detail{};
         check(j2k_decoder_decode_full_into(handle_, &options, output, length, stride, &detail),
+              detail);
+    }
+
+    // Create this decoder's persistent Metal session. Throws a j2k::error
+    // carrying J2K_UNSUPPORTED when Metal is unavailable or when compiled
+    // without the `metal` feature.
+    void metal_init() {
+        j2k_error detail{};
+        check(j2k_decoder_metal_init(handle_, &detail), detail);
+    }
+
+    // Decode the full image on the Metal GPU backend, strictly without CPU
+    // fallback, reusing the session created by metal_init(). Throws a
+    // j2k::error carrying J2K_UNSUPPORTED when compiled without the `metal`
+    // feature. Every failure leaves output untouched.
+    void metal_decode_into(uint8_t *output, size_t length, size_t stride,
+                           const j2k_decode_options &options = J2K_DECODE_OPTIONS_INIT) {
+        j2k_error detail{};
+        check(j2k_decoder_metal_decode_into(handle_, &options, output, length, stride, &detail),
               detail);
     }
 

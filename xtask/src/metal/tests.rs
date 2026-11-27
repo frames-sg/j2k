@@ -48,6 +48,10 @@ printf '%s\n' 'test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured; 0 f
 printf '%s\n' 'test ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling ... ok'
 printf '%s\n' 'test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
 ;;
+*" -p j2k-c "*)
+printf '%s\n' 'test metal_decode_matches_the_cpu_samples_and_never_falls_back ... ok'
+printf '%s\n' 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
+;;
 *" -p j2k-metal "*)
 printf '%s\n' 'test encode::tests::stage_validation::metal_deinterleave_gray16_lossless_facade_dispatches_and_round_trips ... ok'
 printf '%s\n' 'test result: ok. 150 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
@@ -85,7 +89,7 @@ fn metal_commands_execute_complete_hermetic_compile_and_release_plans() {
     }
 
     let log = recording.log();
-    assert_eq!(log.lines().count(), 14);
+    assert_eq!(log.lines().count(), 15);
     assert!(log.contains("clippy --lib --all-features"));
     assert!(log.contains("clippy --bins --examples --tests --benches --all-features"));
     assert!(log.contains("-A clippy::disallowed_methods -A clippy::disallowed_macros"));
@@ -99,6 +103,7 @@ fn metal_commands_execute_complete_hermetic_compile_and_release_plans() {
     assert!(log.contains("-p j2k-transcode-metal"));
     assert!(log.contains("-p j2k-ml"));
     assert!(log.contains("-p j2k-mpsgraph"));
+    assert!(log.contains("-p j2k-c"));
     assert!(log.contains("one_thousand_direct_submissions_reuse_one_session"));
 }
 
@@ -110,7 +115,7 @@ fn metal_quick_preserves_every_runtime_and_ignored_inventory_gate() {
     run_release_metal(ValidationMode::Quick).expect("quick Metal command plan");
 
     let log = recording.log();
-    assert_eq!(log.lines().count(), 11);
+    assert_eq!(log.lines().count(), 12);
     assert!(log.lines().all(|line| line.contains("--profile gpu-quick")));
     assert_eq!(log.matches("clippy --profile gpu-quick").count(), 2);
     assert!(log.contains("clippy --profile gpu-quick --lib"));
@@ -119,7 +124,9 @@ fn metal_quick_preserves_every_runtime_and_ignored_inventory_gate() {
     assert!(!log.contains("--all-features"));
     assert!(!log.contains("cuda"));
     assert!(log.contains("--features j2k-ml/metal"));
+    assert!(log.contains("--features j2k-c/metal"));
     assert!(log.contains("-p j2k-ml --features metal"));
+    assert!(log.contains("-p j2k-c --features metal"));
     assert!(log.contains("-p j2k-mpsgraph"));
     assert!(log.contains("--ignored --list"));
     assert!(log.contains("--ignored --show-output"));

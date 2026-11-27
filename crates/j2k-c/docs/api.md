@@ -7,10 +7,11 @@ interleaved samples losslessly or lossy to rate, size or quality targets. It
 also decodes and encodes JPEG-LS codestreams and DICOM RLE Lossless frames. One
 decoder can move to a new codestream with `j2k_decoder_feed`, and
 `j2k_decoder_transfer_syntax` reports how the codestream it holds is coded.
-Full images decode through the batch route or the core whole-image route.
+Full images decode through the batch route or the core whole-image route, and
+builds with the `metal` feature add a strict full-image Metal GPU route.
 `include/j2k.hpp` wraps it for C++17 with move-only ownership and turns error
-statuses into `j2k::error` exceptions. The library is the CPU codec of the
-`j2k` Rust crate it is built and versioned with.
+statuses into `j2k::error` exceptions. The library is the codec of the `j2k`
+Rust crate it is built and versioned with.
 
 ## Functions
 
@@ -24,6 +25,7 @@ statuses into `j2k::error` exceptions. The library is the CPU codec of the
 | `j2k_decoder_completeness` | Which reductions of a codestream opened with `J2K_OPEN_PARTIAL` decode exactly. |
 | `j2k_decoder_output_info`, `j2k_decoder_decode_into` | Plan and decode a full image, region or reduction (0 to 3) in native samples. |
 | `j2k_decoder_output_info_native`, `j2k_decoder_decode_full_into` | Plan and decode a full image through the core whole-image route. |
+| `j2k_decoder_metal_init`, `j2k_decoder_metal_decode_into` | Create a persistent Metal session and decode a full image on the GPU when built with the `metal` feature. |
 | `j2k_decoder_row_info`, `j2k_decoder_decode_rows` | Stream the full image row by row through a callback. |
 | `j2k_decoder_prepare_operations`, `j2k_decoder_plan_region`, `j2k_decoder_decode_region_into`, `j2k_decoder_set_operation_cache_limit` | Exact region operations: reductions 0 to 31, 8-bit sRGB output, memory limits and cancellation. |
 | `j2k_cancellation_create`, `j2k_cancellation_cancel`, `j2k_cancellation_free` | Cancellation tokens for exact operations. |
@@ -31,10 +33,11 @@ statuses into `j2k::error` exceptions. The library is the CPU codec of the
 | `j2k_jpegls_inspect`, `j2k_jpegls_decode`, `j2k_jpegls_encode` | Read, decode and encode JPEG-LS (see [JPEG-LS](#jpeg-ls)). |
 | `j2k_rle_decode`, `j2k_rle_encode` | Decode and encode DICOM RLE Lossless frames (see [DICOM RLE](#dicom-rle)). |
 
-In C++, `j2k::decoder` has `info()`, `component(index)`, `color_info()`,
-`icc_profile()`, `output_info()`, `decode_into()`, `row_info()`,
-`decode_rows()`, `prepare_operations()`, `plan_region()`,
-`decode_region_into()` and `set_operation_cache_limit()`.
+In C++, `j2k::decoder` has `info()`, `completeness()`, `component(index)`,
+`color_info()`, `icc_profile()`, `output_info()`, `decode_into()`, `feed()`,
+`transfer_syntax()`, `output_info_native()`, `decode_full_into()`, `row_info()`,
+`decode_rows()`, `prepare_operations()`, `plan_region()`, `decode_region_into()`,
+`set_operation_cache_limit()`, `metal_init()` and `metal_decode_into()`.
 `j2k::cancellation_token` has `cancel()` and `native_handle()`, and
 `j2k::encode_lossless()` and `j2k::encode()` return a `std::vector<uint8_t>`.
 `j2k::jpegls_inspect()` returns a `j2k_jpegls_info`, and
@@ -45,8 +48,8 @@ In C++, `j2k::decoder` has `info()`, `component(index)`, `color_info()`,
 ## Persistent feed and transfer syntax
 
 `j2k_decoder_feed` replaces the codestream a live decoder holds and keeps its
-threads, settings, and input and output limits. It applies the same signature
-and input-limit checks as `j2k_decoder_open` and inspects the new headers
+threads, settings, input and output limits, and Metal session. It applies the
+same signature and input-limit checks as `j2k_decoder_open` and inspects the new headers
 completely before replacing any state, so a failed feed leaves the previous
 codestream inspectable and decodable. The decoder keeps its own copy of the
 input, so you can release yours after the call. Feed is for successive
@@ -258,6 +261,35 @@ callable that returns `true` to continue, and returns the row layout, or
 `std::nullopt` when the callable stopped the decode. If the callable throws,
 the decode stops and the exception is rethrown after the call.
 
+## Metal decode
+
+Builds with the `metal` feature decode full images on the Metal GPU.
+`j2k_decoder_metal_init` and `j2k_decoder_metal_decode_into` are exported in
+every build; without the feature they return `J2K_UNSUPPORTED` and leave pixel
+buffers untouched, so an application can link one ABI and check the call
+status.
+
+`j2k_decoder_metal_init` creates the decoder's persistent Metal session and
+is idempotent. It returns `J2K_UNSUPPORTED` when Metal is unavailable on the
+host. A successful `j2k_decoder_feed` keeps the session. Every
+`j2k_decoder_metal_decode_into` call reuses that session.
+
+`j2k_decoder_metal_decode_into` decodes the full image at full resolution into
+a caller-owned strided buffer with the same stride and span contract as
+`j2k_decoder_decode_into`. The request must be the full image at reduction 0
+and representable by the core whole-image route, which accepts raw codestreams
+only; `J2K_OPEN_LENIENT` and `J2K_OPEN_PARTIAL` therefore do not apply.
+`j2k_decoder_metal_init` must have succeeded first. The call never falls back
+to the CPU: a Metal failure returns its `J2K_*` status, and no error path
+substitutes CPU output.
+The decoder downloads the result into its own staging buffer and copies rows
+only after a successful decode, so every failure leaves the destination
+untouched.
+
+C++ callers use `decoder::metal_init` and `decoder::metal_decode_into`. On
+non-macOS hosts the feature builds, but initialization returns
+`J2K_UNSUPPORTED`.
+
 ## Color specification
 
 `j2k_decoder_color_info` describes the JP2/JPH color specification (COLR) box
@@ -458,8 +490,9 @@ the call blocks. Higher values return `J2K_INVALID_ARGUMENT`.
 
 Serialize every call on one decoder, including metadata queries and
 `j2k_decoder_close`. A decoder may move between threads, and different
-decoders can run at the same time. There is no global error state,
-process-wide lock or GPU routing.
+decoders can run at the same time. There is no global error state or
+process-wide lock. Only the explicit `j2k_decoder_metal_*` calls route work to
+the GPU; every other function stays on the CPU.
 
 ## Errors
 
@@ -490,7 +523,9 @@ Result structures are written only on success. Ordinary errors leave pixel
 buffers unchanged, because J2K finishes decoding before it copies samples.
 `j2k_decoder_decode_full_into`, `j2k_jpegls_decode` and `j2k_rle_decode` are
 the exception: they decode straight into your buffer, which may hold part of an
-image after an error.
+image after an error. `j2k_decoder_metal_decode_into` stages the GPU result
+and leaves the destination untouched on every failure, including builds
+without the `metal` feature.
 After `J2K_PANIC` or `J2K_INTERNAL_ERROR`, discard any output and close the
 decoder: every later call on it returns `J2K_PANIC`. A panic hook may still
 write to stderr. Process aborts and invalid pointer accesses can't be caught.
@@ -512,8 +547,10 @@ libraries; behavior a caller depends on needs explicit version or capability
 negotiation.
 
 ABI 1 is the first C ABI revision. Its struct layouts, status values,
-function signatures and ownership rules never change in place. A breaking
-change gets a new ABI revision and migration notes.
+function signatures and ownership rules never change in place. The feed,
+transfer-syntax, core whole-image and Metal entry points are additive and
+introduce no new structure layouts or status values. A breaking change gets a
+new ABI revision and migration notes.
 
 ## Static linking
 

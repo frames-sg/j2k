@@ -45,8 +45,10 @@ relocatable package with the shared library, a static archive, and CMake and
 pkg-config files. It inspects images; keeps one decoder across codestreams;
 decodes full images, regions, and reduced resolutions into
 your buffers as native U8, U16, or I16 samples; streams full images row by row;
-and encodes losslessly or to a rate, size, or PSNR target. It runs on the
-CPU only.
+and encodes losslessly or to a rate, size, or PSNR target. It runs on the CPU
+by default; builds with the `metal` feature add a strict full-image Metal GPU
+decode route through `j2k_decoder_metal_init` and
+`j2k_decoder_metal_decode_into`.
 
 Each [GitHub release](https://github.com/frames-sg/j2k/releases) has a
 prebuilt package for Linux x86-64 and arm64 (glibc 2.28 or newer), macOS 11

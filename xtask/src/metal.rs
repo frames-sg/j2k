@@ -24,6 +24,7 @@ const METAL_COMPILE_PACKAGES: &[&str] = &[
     "j2k-mpsgraph",
     "j2k-mpsgraph-support",
     "j2k",
+    "j2k-c",
 ];
 
 const METAL_REQUIRED_IGNORED_TESTS: &[&str] = &[
@@ -123,6 +124,12 @@ const METAL_TEST_SUITES: &[MetalTestSuite] = &[
         minimum_passed: 1,
         required_test:
             "accelerator_facade_reports_requested_backend_after_all_required_stages_dispatch",
+    },
+    MetalTestSuite {
+        label: "J2K C ABI Metal decode",
+        package: "j2k-c",
+        minimum_passed: 1,
+        required_test: "metal_decode_matches_the_cpu_samples_and_never_falls_back",
     },
 ];
 
@@ -269,7 +276,7 @@ fn quick_clippy_args(non_library_targets: bool) -> Vec<&'static str> {
         args.push("--lib");
     }
     append_packages(&mut args);
-    args.extend_from_slice(&["--features", "j2k-ml/metal"]);
+    args.extend_from_slice(&["--features", "j2k-ml/metal", "--features", "j2k-c/metal"]);
     if non_library_targets {
         append_non_library_clippy_flags(&mut args);
     } else {
@@ -298,7 +305,7 @@ fn runtime_suite_args(package: &str, mode: ValidationMode) -> Vec<&str> {
     }
     args.extend_from_slice(METAL_RUNTIME_TEST_TARGETS);
     args.extend_from_slice(&["-p", package]);
-    if mode == ValidationMode::Quick && package == "j2k-ml" {
+    if mode == ValidationMode::Quick && matches!(package, "j2k-ml" | "j2k-c") {
         args.extend_from_slice(&["--features", "metal"]);
     }
     args.extend_from_slice(&["--", "--show-output"]);
