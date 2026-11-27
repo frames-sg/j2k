@@ -20,8 +20,10 @@ and a release is published from tag `v<workspace.package.version>`.
 3. Merge the candidate to `main` and [validate it](#validating-the-candidate)
    on hosted CI and the GPU runners.
 4. [Tag it](#tagging). The tag push starts the publish workflow.
-5. [Publish to crates.io](#publishing) once the environment is approved.
-6. [Create the GitHub release](#creating-the-github-release) by hand.
+5. [Publish to crates.io](#publishing) once the environment is approved. The
+   workflow then attaches the [C packages](#c-packages) to a draft GitHub
+   release.
+6. [Finish the GitHub release](#creating-the-github-release) by hand.
 7. [Start the next version](#starting-the-next-version).
 
 ## Release notes
@@ -186,7 +188,8 @@ repository. Publish it before building that adapter from the registry; a local
 These workspace members aren't published to crates.io (`publish = false`):
 `j2k-alloc-probe`, `j2k-c`, `j2k-compare`, `j2k-python`, `j2k-t803`,
 `j2k-test-support`, `j2k-transcode-test-support`, and `xtask`. `j2k-c` ships as
-native packages built by `crates/j2k-c/scripts/package.py`, and `j2k-python`
+native packages built by `crates/j2k-c/scripts/package.py` and attached to
+the GitHub release (see [C packages](#c-packages)), and `j2k-python`
 as the `j2k` wheel built by `python-bindings.yml`. Published crates need a
 package README and docs.rs metadata.
 
@@ -258,6 +261,44 @@ run before any Cargo or registry call, and errors never print remote URLs or
 transport messages that could contain credentials. The script then reruns the
 strict offline integrity check.
 
+### C packages
+
+`publish.yml` calls `.github/workflows/c-packages.yml`, which builds a
+C/C++ package on each platform with `package.py --archive`:
+
+| Asset | Built on |
+| --- | --- |
+| `j2k-c-<version>-linux-x86_64.tar.gz` | `manylinux_2_28` x86-64 container, glibc 2.28 |
+| `j2k-c-<version>-linux-aarch64.tar.gz` | `manylinux_2_28` arm64 container on an arm64 runner, glibc 2.28 |
+| `j2k-c-<version>-macos-aarch64.tar.gz` | macOS arm64, `MACOSX_DEPLOYMENT_TARGET=11.0` |
+| `j2k-c-<version>-windows-x86_64.zip` | Windows x86-64, MSVC |
+
+Each archive has a `.sha256` file. A test job per platform downloads the
+archive and runs `crates/j2k-c/scripts/test_package.py` on a plain runner: it
+checks the checksum, unpacks the archive into a new directory, checks the
+glibc or macOS floor, and builds and runs the native consumer tests (CMake,
+and pkg-config outside Windows) and the packaged examples. A final job checks
+that every archive is present and matches its `.sha256` file, and writes
+`j2k-c-<version>-SHA256SUMS` with `scripts/c_release_assets.py manifest`. It
+prints the manifest and its SHA-256 in the job summary.
+
+The crates.io job waits for the C packages, so they are built, tested and
+checksummed before the `crates-io-publish` environment is approved, and the
+one approval covers both. After the crates are published, the
+`c-release-assets` job runs `scripts/c_release_assets.py verify`: the tag must
+be `v<version>`, the directory must hold exactly the four archives, their
+`.sha256` files and the manifest, and the manifest must match the SHA-256
+recorded before approval. It then creates a draft GitHub release for the tag,
+titled `J2K X.Y.Z`, with those nine files. It is the only job with
+`contents: write`, and it never replaces an existing release. If it fails
+after creating the draft, delete the draft and re-run the failed job.
+
+Full validation calls the same workflow on every push to `main`, and the
+release candidate aggregate requires it, so a candidate that can't be
+packaged and tested on every platform fails before it is tagged. To check
+packaging on a branch without releasing, dispatch `c-packages.yml`; it only
+uploads workflow artifacts and uses no secrets.
+
 ### Python wheels
 
 The `j2k` wheel goes to PyPI separately from the crates. Dispatch
@@ -296,9 +337,9 @@ the exact commit.
 
 ## Creating the GitHub release
 
-No workflow creates the GitHub release. After the crates.io publish finishes,
-create the release for tag `v<workspace.package.version>` by hand, titled
-`J2K X.Y.Z`. Its body is:
+After the crates.io publish, the publish workflow creates a draft release for
+tag `v<workspace.package.version>`, titled `J2K X.Y.Z`, with the
+[C packages](#c-packages) attached. Edit the draft by hand. Its body is:
 
 1. a short summary paragraph;
 2. the `Unreleased` text from `CHANGELOG.md` at the tag;
@@ -308,8 +349,9 @@ create the release for tag `v<workspace.package.version>` by hand, titled
    **Full Changelog**: https://github.com/frames-sg/j2k/compare/vPREV...vX.Y.Z
    ```
 
-Attach the T.803 reports from the full-validation and GPU validation runs.
-Don't paste workflow run IDs into the notes.
+Attach the T.803 reports from the full-validation and GPU validation runs,
+then publish the draft. Don't paste workflow run IDs into the notes, and
+don't replace the C package files.
 
 ## Starting the next version
 

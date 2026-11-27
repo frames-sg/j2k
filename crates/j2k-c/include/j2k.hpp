@@ -93,8 +93,8 @@ inline std::vector<uint8_t> encode_lossless(const uint8_t *samples, size_t lengt
                                             const j2k_encode_options &options) {
     uint8_t *data = nullptr;
     size_t size = 0;
-    j2k_error detail{};
-    check(j2k_encode_lossless(samples, length, &options, &data, &size, &detail), detail);
+    j2k_error diagnostic{};
+    check(j2k_encode_lossless(samples, length, &options, &data, &size, &diagnostic), diagnostic);
     return detail::take_buffer(data, size);
 }
 
@@ -106,8 +106,8 @@ inline std::vector<uint8_t> encode(const uint8_t *samples, size_t length,
                                    j2k_encode_report *report = nullptr) {
     uint8_t *data = nullptr;
     size_t size = 0;
-    j2k_error detail{};
-    check(j2k_encode(samples, length, &options, &params, &data, &size, report, &detail), detail);
+    j2k_error diagnostic{};
+    check(j2k_encode(samples, length, &options, &params, &data, &size, report, &diagnostic), diagnostic);
     return detail::take_buffer(data, size);
 }
 
@@ -134,8 +134,8 @@ inline std::vector<uint8_t> jpegls_encode(const uint8_t *samples, size_t length,
                                           const j2k_jpegls_encode_options &options) {
     uint8_t *data = nullptr;
     size_t size = 0;
-    j2k_error detail{};
-    check(j2k_jpegls_encode(samples, length, &options, &data, &size, &detail), detail);
+    j2k_error diagnostic{};
+    check(j2k_jpegls_encode(samples, length, &options, &data, &size, &diagnostic), diagnostic);
     return detail::take_buffer(data, size);
 }
 
@@ -158,8 +158,8 @@ inline std::vector<uint8_t> rle_encode(const uint8_t *samples, size_t length,
                                        const j2k_rle_layout &layout) {
     uint8_t *data = nullptr;
     size_t size = 0;
-    j2k_error detail{};
-    check(j2k_rle_encode(samples, length, &layout, &data, &size, &detail), detail);
+    j2k_error diagnostic{};
+    check(j2k_rle_encode(samples, length, &layout, &data, &size, &diagnostic), diagnostic);
     return detail::take_buffer(data, size);
 }
 

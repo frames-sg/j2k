@@ -21,8 +21,8 @@ versioned with, through the batch route and the core whole-image route.
 | JPEG-LS | Decoding and encoding of 2- to 16-bit lossless and near-lossless codestreams, as in DICOM, with every interleave mode and restart intervals. Decoding also reads preset coding parameters |
 | DICOM RLE | Decoding and encoding of RLE Lossless frames with 8, 16 or 32 bits allocated and up to 15 segments, into color-by-pixel or color-by-plane samples. Strict by default, with a lenient mode that reports what it accepted |
 | Threads | The codec's shared pool, or a decoder's own pool of 1 to 64 threads |
-| Platforms | macOS and GNU/Linux shared libraries and static archives, each specific to the target it was built for. A GNU/Linux package needs the build host's glibc or newer |
-| Consumers | C11 and C++17, through CMake (`J2K::j2k` or `J2K::j2k_static`) or pkg-config (`j2k`). Prebuilt packages need no Rust toolchain |
+| Platforms | Prebuilt packages for Linux x86-64 and arm64 with glibc 2.28 or newer, macOS 11 or newer on Apple silicon, and Windows x86-64 for MSVC. Each package runs only on its own platform. Linux and macOS packages also hold a static archive. A package you build yourself works on the host it was built on, and on Linux needs that host's glibc or newer |
+| Consumers | C11 and C++17, through CMake (`J2K::j2k`, or `J2K::j2k_static` on Linux and macOS) or, on Linux and macOS, pkg-config (`j2k`). Packages need no Rust toolchain |
 
 Native pixel decoding rejects ICC-tagged and palette-mapped images, mixed
 precision or signedness, precision above 16 bits, unsupported colors or
@@ -55,14 +55,16 @@ as your buffer.
 ## Not supported
 
 GPU decoding and encoding, submitting several images in one call, streaming
-rows of a region or a reduced resolution, range I/O, Windows packages, .NET
+rows of a region or a reduced resolution, range I/O, prebuilt packages for
+Intel Macs, Windows on Arm or musl-based Linux, MinGW import libraries, .NET
 or Java bindings, and parsing slide containers. Python bindings are the
 separate `j2k` package on PyPI.
 
 The library's tests cover its ownership rules and decoded sample values.
-They are not a new ISO conformance run or a medical-device validation. CI
-builds a package on each platform and runs the same C and C++ consumer tests
-against it; passing on one platform says nothing about another.
+They are not a new ISO conformance run or a medical-device validation. Each
+prebuilt package is unpacked and passes the same C and C++ consumer tests and
+examples on its own platform before it is released; passing on one platform
+says nothing about another.
 
 ## Packaged libraries
 
@@ -72,26 +74,28 @@ version. GNU/Linux packages contain `lib/libj2k.so.1` with SONAME
 `@rpath/libj2k.1.dylib`, compatibility version 1.0.0, and current version
 equal to the package version. Each `lib/` also has an unversioned
 `libj2k.so` or `libj2k.dylib` symlink for linking. Applications load the
-versioned name, so deploy that file. The library is stripped to its
-exported `j2k_*` symbols and embeds no build-machine paths.
+versioned name, so deploy that file. Windows packages contain `bin/j2k.dll`,
+its import library `lib/j2k.dll.lib`, and no pkg-config file; the DLL name
+doesn't carry the ABI revision. The library is stripped to its exported
+`j2k_*` symbols and embeds no build-machine paths.
 
 Cargo also builds a static archive, `libj2k_c.a`, for source consumers that
-link the C ABI statically. The binary package ships it as `lib/libj2k.a`
+link the C ABI statically. Linux and macOS packages ship it as `lib/libj2k.a`
 beside the shared library.
 
-A GNU/Linux package needs at least the glibc version of the machine that
-built it; there is no older baseline. To find the newest glibc symbol version
-a package uses, and compare it with `ldd --version` on the target machine:
+Prebuilt GNU/Linux packages are built against glibc 2.28, so they run on
+distributions with glibc 2.28 or newer, such as RHEL 8, Debian 10 and
+Ubuntu 20.04. A package you build yourself needs at least the glibc of the
+machine that built it. To find the newest glibc symbol version a package
+uses, and compare it with `ldd --version` on the target machine:
 
 ```sh
 objdump -T lib/libj2k.so.1 | grep -o 'GLIBC_[0-9][0-9.]*' | sort -uV | tail -n 1
 ```
 
-A package built by CI on GitHub's `ubuntu-latest` image needs that image's
-glibc or newer. The image moves to newer Ubuntu releases over time, and the
-CI log prints the minimum of each build. macOS packages record their minimum
-OS in `LC_BUILD_VERSION`, which follows `MACOSX_DEPLOYMENT_TARGET` at build
-time:
+Prebuilt macOS packages need macOS 11 or newer. A macOS package records its
+minimum OS in `LC_BUILD_VERSION`, which follows `MACOSX_DEPLOYMENT_TARGET` at
+build time:
 
 ```sh
 otool -l lib/libj2k.1.dylib | grep -A4 LC_BUILD_VERSION

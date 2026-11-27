@@ -361,6 +361,12 @@ fn validate_publish_workflow_source(
         "CARGO_UNSTABLE_PUBLISH_TIMEOUT: \"true\"",
         "CARGO_PUBLISH_TIMEOUT: \"600\"",
         "toolchain: nightly-",
+        "uses: ./.github/workflows/c-packages.yml",
+        "needs: [preflight, c-packages]",
+        "needs: [c-packages, publish]",
+        "python3 scripts/c_release_assets.py verify --tag \"${RELEASE_TAG}\"",
+        "gh release create \"${RELEASE_TAG}\"",
+        "--draft --verify-tag",
     ] {
         if !workflow_source.contains(required) {
             errors.push(format!(
@@ -410,10 +416,12 @@ fn validate_publish_workflow_source(
                 .ok_or_else(|| format!("{} job names must be strings", workflow_path.display()))
         })
         .collect::<Result<BTreeSet<_>, _>>()?;
-    let expected_jobs = BTreeSet::from(["preflight".to_string(), "publish".to_string()]);
+    let expected_jobs = BTreeSet::from(
+        ["preflight", "c-packages", "publish", "c-release-assets"].map(ToString::to_string),
+    );
     if actual_jobs != expected_jobs {
         errors.push(format!(
-            "{} must contain exactly preflight and publish jobs; found {actual_jobs:?}",
+            "{} must contain exactly the preflight, c-packages, publish and c-release-assets jobs; found {actual_jobs:?}",
             workflow_path.display()
         ));
     }

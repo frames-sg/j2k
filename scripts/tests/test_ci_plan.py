@@ -284,6 +284,20 @@ class ClassificationTests(unittest.TestCase):
                 self.assertTrue(plan.rust)
                 self.assertTrue(plan.c_api)
 
+        # The prebuilt-package build, its consumer test, and the release wiring.
+        for path in (
+            "crates/j2k-c/scripts/package.py",
+            "crates/j2k-c/scripts/test_package.py",
+            "crates/j2k-c/cmake/J2KConfig.cmake.in",
+            "crates/j2k-c/native/examples/CMakeLists.txt",
+            ".github/workflows/c-packages.yml",
+            "scripts/c_release_assets.py",
+        ):
+            with self.subTest(path=path):
+                plan = self.classify(path)
+                self.assertTrue(plan.rust)
+                self.assertTrue(plan.c_api)
+
         library = self.classify("crates/j2k-c/src/ffi.rs")
         self.assertFalse(library.public_api)
         self.assertFalse(library.cuda)

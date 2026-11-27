@@ -116,15 +116,21 @@ Sunday, and on manual dispatch. Beyond the PR checks it runs, among others:
   and Windows x86-64;
 - `no-std`, Miri, the benchmark build, fuzz build, and a short fuzz run (a
   longer one on the weekly schedule);
-- `cargo xtask package`, `j2k-ml` package smoke test, and host coverage.
+- `cargo xtask package`, `j2k-ml` package smoke test, and host coverage;
+- the prebuilt C/C++ packages for every release platform
+  (`c-packages.yml`), each tested from its archive.
 
 The `Release candidate aggregate` job lists every job a release needs and
 fails unless all of them succeeded.
 
 ## Other workflows
 
-- `publish.yml` runs on release tags and publishes to crates.io. See
-  [Releasing](releasing.md).
+- `publish.yml` runs on release tags, publishes to crates.io, and attaches
+  the C/C++ packages to a draft GitHub release. See [Releasing](releasing.md).
+- `c-packages.yml` builds the C/C++ packages on Linux x86-64 and arm64, macOS
+  arm64, and Windows x86-64, and tests each one from its archive. Full
+  validation and the publish workflow call it. A manual dispatch is a dry run:
+  it only uploads workflow artifacts and uses no secrets.
 - `python-bindings.yml` can also be dispatched by hand to validate a CUDA
   wheel on the GPU runner or publish wheels to PyPI.
 - `secret-scan.yml` runs gitleaks on pushes and is reused by the PR checks.

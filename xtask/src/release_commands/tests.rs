@@ -334,6 +334,47 @@ fn publish_workflow_requires_all_exact_sha_t803_lanes() {
 }
 
 #[test]
+fn publish_workflow_gates_crates_on_the_c_packages_and_attaches_them_after_approval() {
+    let source = include_str!("../../../.github/workflows/publish.yml");
+    for (from, to) in [
+        // Crates must not publish before the C packages are built and tested.
+        ("needs: [preflight, c-packages]", "needs: [preflight]"),
+        // The attachment must wait for the approved publish job.
+        ("needs: [c-packages, publish]", "needs: [c-packages]"),
+        // Packages that skip the recorded manifest check must not be attached.
+        (
+            "python3 scripts/c_release_assets.py verify --tag",
+            "python3 scripts/c_release_assets.py --tag",
+        ),
+        // Maintainers publish the release by hand.
+        ("--draft --verify-tag", "--verify-tag"),
+    ] {
+        assert!(source.contains(from), "fixture text drifted: {from}");
+        let mut errors = Vec::new();
+        validate_publish_workflow_source(&source.replacen(from, to, 1), &mut errors)
+            .expect("parse publish workflow");
+        assert!(
+            errors.iter().any(|error| error.contains(from)),
+            "removing `{from}` was accepted: {errors:#?}"
+        );
+    }
+
+    let without_attachment = source
+        .split("\n  # Runs only after the approved crates.io publish")
+        .next()
+        .expect("publish workflow text");
+    let mut errors = Vec::new();
+    validate_publish_workflow_source(without_attachment, &mut errors)
+        .expect("parse publish workflow");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("c-release-assets jobs")),
+        "a publish workflow without the C package attachment was accepted: {errors:#?}"
+    );
+}
+
+#[test]
 fn publish_workflow_rejects_checkout_that_can_peel_an_annotated_tag() {
     let workflow = include_str!("../../../.github/workflows/publish.yml").replacen(
         "          ref: ${{ github.ref }}\n",
@@ -346,7 +387,7 @@ fn publish_workflow_rejects_checkout_that_can_peel_an_annotated_tag() {
 
     assert!(errors
         .iter()
-        .any(|error| error.contains("bind all 2 checkout steps to the triggering ref")));
+        .any(|error| error.contains("bind all 3 checkout steps to the triggering ref")));
 }
 
 #[cfg(unix)]

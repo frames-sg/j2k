@@ -16,7 +16,8 @@ doesn't fork or reimplement any codec code.
 | `include/j2k.hpp` | Header-only C++ ownership and exceptions |
 | `native/` | C and C++ examples, and the consumer tests run against an installed package |
 | `cmake/`, `pkgconfig/` | CMake package and pkg-config templates |
-| `scripts/package.py` | Builds the shared library and the relocatable package, and collects dependency license notices |
+| `scripts/package.py` | Builds the shared library and the relocatable package, optionally as an archive with a `.sha256` file, and collects dependency license notices |
+| `scripts/test_package.py` | Checks an archive's checksum, unpacks it into a new directory, and builds and runs the consumer tests and examples against it |
 
 `j2k` does the parsing, support checks, geometry, preparation, entropy
 decoding, inverse transforms, color interpretation and encoding. The adapter
@@ -42,4 +43,5 @@ adding a test that calls it the way a C caller would.
 Codec behavior belongs in `j2k` and `j2k-native`. This crate owns the C and
 C++ bindings, packaging, and the support statement in `docs/supported.md`. It
 has `publish = false`: it ships only as native packages built by
-`scripts/package.py`, which never uploads anything.
+`scripts/package.py`, which never uploads anything. The release workflow
+attaches those packages to each GitHub release.

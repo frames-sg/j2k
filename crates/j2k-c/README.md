@@ -19,10 +19,20 @@ lossy to a rate, size or PSNR target, as a raw codestream, JP2 or JPH. It also
 decodes and encodes JPEG-LS codestreams and DICOM RLE Lossless frames. GPU
 decoding and slide-container readers are not part of this API.
 
-The crate isn't published to crates.io. It ships as the native package that
-`scripts/package.py` builds.
+The crate isn't published to crates.io. It ships as the native packages that
+`scripts/package.py` builds, attached to each GitHub release.
 
-## Usage
+## Download a prebuilt package
+
+Each [GitHub release](https://github.com/frames-sg/j2k/releases) has a
+package for Linux x86-64 and arm64 (glibc 2.28 or newer), macOS 11 or newer
+on Apple silicon, and Windows x86-64 (MSVC), each with a `.sha256` file. The
+[quickstart](docs/quickstart.md#download-a-prebuilt-package) says which
+archive to pick, how to check it, and how to use it from CMake or pkg-config,
+including the runtime search path on Linux and macOS and where `j2k.dll` goes
+on Windows.
+
+## Build from source
 
 With the workspace's pinned Rust toolchain, Python 3 and CMake 3.20 or newer,
 from the repository root:
@@ -35,11 +45,14 @@ target/examples/j2k_decode image.jp2
 target/examples/j2k_decode_cpp image.jp2
 ```
 
-The package holds the headers, the shared library, the static archive
-`lib/libj2k.a`, CMake and pkg-config files, the examples, these docs, and
-license notices for every package the library links or builds with.
-Packaging builds for the host (macOS or GNU/Linux), doesn't cross-compile, and
-refuses to overwrite an existing output directory.
+The package holds the headers, the shared library, CMake files, the examples,
+these docs, and license notices for every package the library links or builds
+with. macOS and GNU/Linux packages also hold the static archive
+`lib/libj2k.a` and pkg-config files. Packaging builds for the host (macOS,
+GNU/Linux, or x86-64 Windows with Visual Studio's C++ tools), doesn't
+cross-compile, and refuses to overwrite an existing output directory or
+archive. `--archive tar.gz` or `--archive zip` also writes an archive of the
+package and its `.sha256` file; `--name` sets the archive's name.
 
 Applications call `find_package(J2K CONFIG REQUIRED)` and link `J2K::j2k`, or
 `J2K::j2k_static` for the static archive. C code includes `j2k.h`; C++17 code
@@ -68,7 +81,13 @@ cmake --build target/native-tests
 ctest --test-dir target/native-tests --output-on-failure
 ```
 
-The native tests also need pkg-config.
+The native tests also need pkg-config, except on Windows. To test an archive
+the way a consumer uses it, unpacked into a new directory:
+
+```sh
+python3 crates/j2k-c/scripts/package.py --name j2k-c-test --archive tar.gz
+python3 crates/j2k-c/scripts/test_package.py dist/j2k-c-test.tar.gz --fixture target/fixture.j2c --work target/consumer
+```
 
 Keep `include/j2k.h`, the Rust ABI definitions in `src/abi.rs`, the examples
 and `docs/api.md` in step. A change to supported formats, limits or sample

@@ -501,6 +501,12 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
         with: { command: check licenses advisories bans sources }
 
+  # The same build and consumer tests the release runs, so a candidate that
+  # can't be packaged on every platform fails here rather than after tagging.
+  c-packages:
+    name: C packages
+    uses: ./.github/workflows/c-packages.yml
+
   release-candidate:
     name: Release candidate aggregate
     if: ${{ always() }}
@@ -535,6 +541,7 @@ jobs:
       - package
       - coverage
       - deny
+      - c-packages
     runs-on: ubuntu-latest
     env:
       REQUIRED_RESULTS: ${{ toJSON(needs) }}

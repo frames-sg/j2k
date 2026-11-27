@@ -1,0 +1,253 @@
+name: C packages
+
+# Builds the prebuilt C/C++ packages, tests each one from its archive in a new
+# directory, and records their SHA-256 manifest. A manual dispatch is a dry run
+# that only produces artifacts. publish.yml calls this workflow on release tags
+# and attaches the artifacts to the draft GitHub Release; full-validation.yml
+# calls it so release candidates are packaged before they are tagged.
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      version:
+        description: "Package version, from [workspace.package].version"
+        value: ${{ jobs.manifest.outputs.version }}
+      manifest-sha256:
+        description: "SHA-256 of the j2k-c-<version>-SHA256SUMS artifact"
+        value: ${{ jobs.manifest.outputs.sha256 }}
+
+permissions:
+  contents: read
+
+concurrency:
+  # github.workflow is the caller's name when another workflow calls this one.
+  group: c-packages-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Package version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: version
+        run: python3 scripts/c_release_assets.py version
+
+  fixture:
+    name: Consumer test image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: "1.99.0"
+      - run: cargo run -p j2k-c --locked --example make_fixture -- target/fixture.j2c
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: c-package-test-fixture
+          path: target/fixture.j2c
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    name: Build (${{ matrix.platform }})
+    needs: [version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The manylinux_2_28 images link against glibc 2.28, as the Python wheels do.
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            image: quay.io/pypa/manylinux_2_28_x86_64:2026.11.14-1@sha256:d086f64cddcace250ef0f0073583c51b8298159303290a730c9f59bd91edfd2c
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+            image: quay.io/pypa/manylinux_2_28_aarch64:2026.11.14-1@sha256:34a5e614a4eb26f73f8bf44cbbf2acf8011620453d03ea35a58537bb3cde44de
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      PACKAGE: j2k-c-${{ needs.version.outputs.version }}-${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: "1.99.0"
+      - name: Build and archive the package
+        run: |
+          set -euo pipefail
+          # The image's system Python is too old for package.py; use its CPython 3.12.
+          python=/opt/python/cp312-cp312/bin/python3
+          if [ ! -x "${python}" ]; then
+            echo "::error::${python} is missing from the manylinux image"
+            exit 1
+          fi
+          "${python}" crates/j2k-c/scripts/package.py --name "${PACKAGE}" --archive tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.PACKAGE }}
+          path: |
+            dist/${{ env.PACKAGE }}.tar.gz
+            dist/${{ env.PACKAGE }}.tar.gz.sha256
+          if-no-files-found: error
+
+  native:
+    name: Build (${{ matrix.platform }})
+    needs: [version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-aarch64
+            runner: macos-latest
+            archive: tar.gz
+          - platform: windows-x86_64
+            runner: windows-latest
+            archive: zip
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      PACKAGE: j2k-c-${{ needs.version.outputs.version }}-${{ matrix.platform }}
+      ARCHIVE: ${{ matrix.archive }}
+      # The oldest macOS the package supports; Windows builds ignore it.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: "1.99.0"
+      - name: Build and archive the package
+        run: python crates/j2k-c/scripts/package.py --name "${PACKAGE}" --archive "${ARCHIVE}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.PACKAGE }}
+          path: |
+            dist/${{ env.PACKAGE }}.${{ matrix.archive }}
+            dist/${{ env.PACKAGE }}.${{ matrix.archive }}.sha256
+          if-no-files-found: error
+
+  test:
+    name: Test (${{ matrix.platform }})
+    needs: [version, fixture, linux, native]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            archive: tar.gz
+            max-glibc: "2.28"
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+            archive: tar.gz
+            max-glibc: "2.28"
+          - platform: macos-aarch64
+            runner: macos-latest
+            archive: tar.gz
+            max-macos: "11.0"
+          - platform: windows-x86_64
+            runner: windows-latest
+            archive: zip
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      PACKAGE: j2k-c-${{ needs.version.outputs.version }}-${{ matrix.platform }}
+      ARCHIVE: ${{ matrix.archive }}
+      MAX_GLIBC: ${{ matrix.max-glibc }}
+      MAX_MACOS: ${{ matrix.max-macos }}
+    steps:
+      # The checkout supplies the consumer test sources and the test script;
+      # the package itself comes only from the downloaded archive.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: ${{ env.PACKAGE }}
+          path: ${{ runner.temp }}/download
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: c-package-test-fixture
+          path: ${{ runner.temp }}/fixture
+      - name: Install CMake and pkg-config if the image lacks them
+        if: ${{ runner.os != 'Windows' }}
+        run: |
+          set -euo pipefail
+          if command -v cmake >/dev/null && command -v pkg-config >/dev/null; then
+            exit 0
+          fi
+          if [ "${RUNNER_OS}" = Linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends cmake pkg-config
+          else
+            brew install cmake pkgconf
+          fi
+      - name: Test the unpacked package as a consumer
+        run: |
+          set -euo pipefail
+          floor=()
+          if [ -n "${MAX_GLIBC}" ]; then floor+=(--max-glibc "${MAX_GLIBC}"); fi
+          if [ -n "${MAX_MACOS}" ]; then floor+=(--max-macos "${MAX_MACOS}"); fi
+          python crates/j2k-c/scripts/test_package.py \
+            "${RUNNER_TEMP}/download/${PACKAGE}.${ARCHIVE}" \
+            --fixture "${RUNNER_TEMP}/fixture/fixture.j2c" \
+            --work "${RUNNER_TEMP}/consumer" ${floor[@]+"${floor[@]}"}
+
+  manifest:
+    name: Checksum manifest
+    needs: [version, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ needs.version.outputs.version }}
+      sha256: ${{ steps.manifest.outputs.sha256 }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: j2k-c-${{ needs.version.outputs.version }}-*
+          path: ${{ runner.temp }}/packages
+          merge-multiple: true
+      - id: manifest
+        name: Check every archive and write the manifest
+        run: python3 scripts/c_release_assets.py manifest --version "${VERSION}" --dir "${RUNNER_TEMP}/packages"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: j2k-c-${{ needs.version.outputs.version }}-SHA256SUMS
+          path: ${{ runner.temp }}/packages/j2k-c-${{ needs.version.outputs.version }}-SHA256SUMS
+          if-no-files-found: error

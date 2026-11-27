@@ -8,12 +8,12 @@ mod yaml;
 use std::collections::BTreeSet;
 use std::path::{Component, PathBuf};
 
-use serde_yaml_ng::Value;
+use serde_yaml_ng::{Mapping, Value};
 
 use self::github_expression::{untrusted_event_run_tokens, value_contains_secret_reference};
 use self::yaml::{
     display_key, is_numeric_zero, jobs, mapping_get, string_set, value_mapping, visit_mappings,
-    workflow, workflows,
+    workflow, workflows, Workflow,
 };
 use super::repo_root;
 
@@ -86,6 +86,40 @@ fn every_workflow_declares_default_permissions_including_contents_read() {
     );
 }
 
+/// The one job in publish.yml with `contents: write`: it attaches the C packages
+/// to a draft release after the approved crates.io publish, using only the
+/// workflow token.
+fn guarded_c_release_assets_job(workflow: &Workflow) -> &Mapping {
+    let attach = &workflow.document["jobs"]["c-release-assets"];
+    assert_eq!(
+        attach["if"].as_str(),
+        Some("${{ github.event_name == 'push' }}"),
+        "only a release tag push attaches C packages"
+    );
+    let expected_needs: Value =
+        serde_yaml_ng::from_str("[c-packages, publish]").expect("attach needs");
+    assert_eq!(
+        attach["needs"], expected_needs,
+        "C packages are attached only after the approved crates.io publish"
+    );
+    let expected_permissions: Value =
+        serde_yaml_ng::from_str("contents: write").expect("attach permissions");
+    assert_eq!(attach["permissions"], expected_permissions);
+    assert!(
+        attach["environment"].is_null() && !value_contains_secret_reference(attach),
+        "the attaching job uses only the workflow token"
+    );
+    for step in attach["steps"].as_sequence().expect("attach steps") {
+        if step["uses"]
+            .as_str()
+            .is_some_and(|reference| reference.starts_with("actions/checkout@"))
+        {
+            assert_eq!(step["with"]["persist-credentials"].as_bool(), Some(false));
+        }
+    }
+    value_mapping(attach, "C package attachment job")
+}
+
 #[test]
 fn jobs_limit_write_permissions_to_guarded_exceptions() {
     let mut violations = Vec::new();
@@ -131,11 +165,16 @@ fn jobs_limit_write_permissions_to_guarded_exceptions() {
             assert_eq!(steps[1]["run"].as_str(), Some("python3 -m scripts.rerun_gpu_evidence"));
             value_mapping(rerun, "GPU evidence rerun job")
         });
+        let release_assets =
+            (workflow.file_name == "publish.yml").then(|| guarded_c_release_assets_job(workflow));
         visit_mappings(&workflow.document, &mut |mapping| {
             let Some(permissions) = mapping_get(mapping, "permissions") else {
                 return;
             };
             if evidence_rerun.is_some_and(|rerun| std::ptr::eq(mapping, rerun)) {
+                return;
+            }
+            if release_assets.is_some_and(|attach| std::ptr::eq(mapping, attach)) {
                 return;
             }
             if oidc_publisher.is_some_and(|publish| std::ptr::eq(mapping, publish)) {
@@ -371,6 +410,60 @@ fn manual_publish_dispatch_is_dry_run_only() {
     assert!(
         condition.contains("github.event_name == 'push'"),
         "the credentialed publish job must not run for workflow_dispatch"
+    );
+    let attach_condition = publish.document["jobs"]["c-release-assets"]["if"]
+        .as_str()
+        .expect("C package attachment event guard");
+    assert!(
+        attach_condition.contains("github.event_name == 'push'"),
+        "a manual publish dispatch must not create a GitHub Release"
+    );
+}
+
+#[test]
+fn c_packages_are_a_secret_free_dry_run_or_a_called_release_step() {
+    let c_packages = workflow("c-packages.yml");
+    let triggers = c_packages.document["on"]
+        .as_mapping()
+        .expect("C packages triggers");
+    let names = triggers
+        .keys()
+        .filter_map(Value::as_str)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        names,
+        BTreeSet::from(["workflow_call", "workflow_dispatch"]),
+        "C packages run only as a manual dry run or from another workflow"
+    );
+    let root = value_mapping(&c_packages.document, &c_packages.file_name);
+    for (name, job) in jobs(root, &c_packages.file_name) {
+        assert!(
+            job["environment"].is_null() && job["permissions"].is_null(),
+            "C package job {} needs no environment or extra token scopes",
+            display_key(name)
+        );
+    }
+    assert!(!value_contains_secret_reference(&c_packages.document));
+
+    for caller in ["publish.yml", "full-validation.yml"] {
+        let call = &workflow(caller).document["jobs"]["c-packages"];
+        assert_eq!(
+            call["uses"].as_str(),
+            Some("./.github/workflows/c-packages.yml"),
+            "{caller} must build the C packages"
+        );
+        assert!(
+            call["secrets"].is_null(),
+            "{caller} must not pass secrets to C packages"
+        );
+    }
+    let aggregate_needs = string_set(
+        &workflow("full-validation.yml").document["jobs"]["release-candidate"]["needs"],
+        "release candidate needs",
+    );
+    assert!(
+        aggregate_needs.contains("c-packages"),
+        "release candidates must package the C library on every platform before tagging"
     );
 }
 
