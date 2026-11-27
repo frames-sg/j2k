@@ -80,6 +80,27 @@ The repo-lint test
 `xtask/tests/repo_lint_support/architecture_policy.rs` checks the direction
 rules against `cargo metadata`.
 
+### Third-party types in public APIs
+
+A dependency whose types appear in a published crate's public API is a public
+dependency. An application has to use a compatible version of it, so changing
+its version range can break that application.
+
+- `objc2`, `objc2-foundation`, `objc2-metal`, the Metal Performance Shaders
+  crates, and `block2` are public dependencies of the Metal and MPSGraph
+  crates, whose expert APIs take and return objc2 protocol objects. Keep each
+  one a caret requirement inside one minor line, never an exact pin, so an
+  application can share one copy with J2K. Moving to a new minor is a breaking
+  change for those crates and needs a **Breaking:** changelog entry. The
+  repo-lint test
+  `metal_crates_use_the_objc2_stack_without_legacy_metal_or_block` checks the
+  ranges.
+- `moxcms` is private to `j2k` and pinned exactly. The sRGB decode charges the
+  memory moxcms holds for an ICC conversion against the caller's limit, and
+  that figure is measured for one moxcms version. Before changing the version,
+  re-run `crates/j2k/tests/icc_memory.rs` and update
+  `icc_conversion_working_bytes` in `crates/j2k/src/decode/srgb8.rs`.
+
 ## Crate dependency graph
 
 Normal dependencies between workspace crates. The repo-lint test

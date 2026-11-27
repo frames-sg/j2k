@@ -82,6 +82,11 @@ To add an entry, see [the changelog guide](contributor-book/documentation.md#cha
   zlib fixes RUSTSEC-2026-0544. j2k calls only zlib's `inflate` and
   `deflate`, not the affected `gzprintf` and `gzwrite`.
 
+- The Metal and MPSGraph crates no longer require one exact version of
+  `objc2`, `objc2-foundation`, `objc2-metal`, the Metal Performance Shaders
+  crates, and `block2`. Any patch release in the same minor line works, so an
+  application can share them with J2K.
+
 ### Documentation
 
 - The guides moved out of `docs/` into the [J2K Book](book/README.md), and

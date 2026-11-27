@@ -54,15 +54,19 @@ tar = "0.4"
 zstd = { version = "0.14.3" }
 weezl = { version = "0.1.12" }
 libloading = "0.9"
-objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
-objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+# The Metal and MPSGraph crates take and return objc2 types in their public
+# API, so the objc2 crates below are public dependencies. Stay within these
+# minor versions; moving to a new minor is a breaking change for those crates.
+# See contributor-book/architecture.md, "Third-party types in public APIs".
+objc2 = { version = "0.6.4", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
     "NSError",
     "NSRange",
     "NSString",
     "NSURL",
 ] }
-objc2-metal = { version = "=0.3.2", default-features = false, features = [
+objc2-metal = { version = "0.3.2", default-features = false, features = [
     "std",
     "objc2-core-foundation",
     "MTLAllocation",
@@ -83,12 +87,12 @@ objc2-metal = { version = "=0.3.2", default-features = false, features = [
     "MTLTexture",
     "MTLTypes",
 ] }
-objc2-metal-performance-shaders = { version = "=0.3.2", default-features = false, features = [
+objc2-metal-performance-shaders = { version = "0.3.2", default-features = false, features = [
     "MPSCore",
     "MPSCoreTypes",
     "MPSNDArray",
 ] }
-objc2-metal-performance-shaders-graph = { version = "=0.3.2", default-features = false, features = [
+objc2-metal-performance-shaders-graph = { version = "0.3.2", default-features = false, features = [
     "std",
     "block2",
     "objc2-metal-performance-shaders",
@@ -102,7 +106,7 @@ objc2-metal-performance-shaders-graph = { version = "=0.3.2", default-features =
     "MPSGraphTensorData",
     "MPSGraphTensorShapeOps",
 ] }
-block2 = { version = "=0.6.2", default-features = false, features = ["std"] }
+block2 = { version = "0.6.2", default-features = false, features = ["std"] }
 rayon  = "1"
 bytemuck = { version = "1.25", default-features = false }
 cc     = "1.2"
@@ -111,6 +115,10 @@ windows-sys = "0.61"
 log    = "0.4"
 memchr = { version = "2.8", default-features = false }
 image = { version = "0.25.8", default-features = false, features = ["bmp", "jpeg", "png", "pnm", "tiff"] }
+# Exact on purpose. `j2k`'s sRGB decode charges the heap moxcms holds for an
+# ICC conversion against the caller's memory limit, and that figure
+# (`icc_conversion_working_bytes`) is measured for this version. Re-measure
+# with crates/j2k/tests/icc_memory.rs before changing it.
 moxcms = { version = "=0.8.1", default-features = false }
 jpeg-encoder = "0.7.0"
 jpeg-decoder = { version = "0.3.2", default-features = false }

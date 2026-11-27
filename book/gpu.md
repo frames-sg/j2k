@@ -154,7 +154,10 @@ cached GPU state, so the next job starts clean.
 request returns an error there. Functions that take Metal objects use
 `objc2-metal` protocol objects, not `metal-rs` types: pass retained objects
 for devices, queues, command buffers, and buffers that J2K should own, and
-borrowed references otherwise.
+borrowed references otherwise. Your application needs the same minor versions
+of `objc2` and `objc2-metal` as `j2k-metal` so that the types match; any patch
+release works. When J2K moves to a new minor of either, the release notes list
+it as a breaking change.
 
 - `J2kDecoder::decode_into_metal` decodes a full image into a caller-owned
   `MetalImageDestination`, so a stream of same-size frames can reuse one

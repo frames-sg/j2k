@@ -122,7 +122,6 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       J2K_OPENJPEG_BIN: /usr/bin/opj_decompress
-      J2K_OPENJPEG_DECOMPRESS_BIN: /usr/bin/opj_decompress
       J2K_OPENJPEG_COMPRESS_BIN: /usr/bin/opj_compress
       J2K_GROK_BIN: /usr/bin/grk_decompress
       J2K_GROK_COMPRESS_BIN: /usr/bin/grk_compress
