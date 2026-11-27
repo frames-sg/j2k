@@ -66,10 +66,6 @@ pub(crate) fn packed_rgb8_dwt_scratch_len(width: u32, height: u32) -> EncodeResu
 #[cfg(feature = "parallel")]
 const MIN_PARALLEL_SAMPLES: usize = 256 * 256;
 
-/// Rows a horizontal-pass worker takes at a time.
-#[cfg(feature = "parallel")]
-const ROW_BATCH: usize = 8;
-
 /// Lift one level's columns in strips, then its rows. `scratch` holds
 /// `workers` equal parts of at least `max(width, height)` samples each; a part
 /// shorter than [`packed_dwt_scratch_len`] only narrows the strips.
@@ -196,6 +192,14 @@ where
         });
     }
     let high_height = level.height - level.low_height;
+    let total_rows = level.low_height.max(high_height);
+    #[cfg(feature = "parallel")]
+    if workers > 1 && level.width * level.height >= MIN_PARALLEL_SAMPLES {
+        return transform_planes_from_parallel(
+            simd, read_rows, outputs, scratch, workers, per_worker, strip, total_rows, level,
+            reversible,
+        );
+    }
     let mut plane_bands = outputs.map(|output| {
         let (low_rows, high_rows) =
             output[..level.height * level.stride].split_at_mut(level.low_height * level.stride);
@@ -204,7 +208,7 @@ where
             high_rows.chunks_mut(BAND_ROWS * level.stride),
         )
     });
-    let bands = (0..level.low_height.max(high_height).div_ceil(BAND_ROWS)).map(|band| {
+    let bands = (0..total_rows.div_ceil(BAND_ROWS)).map(|band| {
         let planes = plane_bands.each_mut().map(|(low, high)| {
             (
                 low.next().unwrap_or_default(),
@@ -213,32 +217,100 @@ where
         });
         (band * BAND_ROWS, planes)
     });
-    #[cfg(feature = "parallel")]
-    if workers > 1 && level.width * level.height >= MIN_PARALLEL_SAMPLES {
-        use rayon::prelude::*;
-        let queue = std::sync::Mutex::new(bands);
-        scratch
-            .par_chunks_mut(per_worker)
-            .with_max_len(1)
-            .for_each(|scratch| {
-                in_simd_scope(
-                    simd,
-                    #[inline(always)]
-                    || {
-                        while let Some(band) = queue.lock().ok().and_then(|mut bands| bands.next())
-                        {
-                            transform_band(
-                                simd, read_rows, band, scratch, strip, level, reversible,
-                            );
-                        }
-                    },
-                );
-            });
-        return Ok(());
-    }
     for band in bands {
         transform_band(simd, read_rows, band, scratch, strip, level, reversible);
     }
+    Ok(())
+}
+
+#[cfg(feature = "parallel")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the parallel band driver is specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn transform_planes_from_parallel<S, R, const N: usize>(
+    simd: S,
+    read_rows: &R,
+    outputs: [&mut [f32]; N],
+    scratch: &mut [f32],
+    workers: usize,
+    per_worker: usize,
+    strip: usize,
+    total_rows: usize,
+    level: LevelRegion,
+    reversible: bool,
+) -> EncodeResult<()>
+where
+    S: Simd,
+    R: Fn(usize, usize, [&mut [f32]; N]) + Sync + ?Sized,
+{
+    use rayon::prelude::*;
+
+    let total_bands = total_rows.div_ceil(BAND_ROWS);
+    let bands_per_worker = total_bands.div_ceil(workers);
+    let rows_per_worker = bands_per_worker * BAND_ROWS;
+    let mut worker_ranges = outputs.map(|output| {
+        let (low_rows, high_rows) =
+            output[..level.height * level.stride].split_at_mut(level.low_height * level.stride);
+        (
+            low_rows.chunks_mut(rows_per_worker * level.stride),
+            high_rows.chunks_mut(rows_per_worker * level.stride),
+        )
+    });
+    let mut jobs = Vec::new();
+    jobs.try_reserve_exact(workers)
+        .map_err(|_| EncodeError::HostAllocationFailed {
+            what: "packed forward DWT worker jobs",
+            bytes: workers,
+        })?;
+    for worker in 0..workers {
+        let first_row = worker * rows_per_worker;
+        let planes = worker_ranges.each_mut().map(|(low, high)| {
+            (
+                low.next().unwrap_or_default(),
+                high.next().unwrap_or_default(),
+            )
+        });
+        jobs.push((first_row, planes));
+    }
+    jobs.into_par_iter()
+        .zip(scratch.par_chunks_mut(per_worker))
+        .for_each(|((chunk_first_row, planes), scratch)| {
+            in_simd_scope(
+                simd,
+                #[inline(always)]
+                || {
+                    let mut plane_bands = planes.map(|(low_rows, high_rows)| {
+                        (
+                            low_rows.chunks_mut(BAND_ROWS * level.stride),
+                            high_rows.chunks_mut(BAND_ROWS * level.stride),
+                        )
+                    });
+                    for b in 0..bands_per_worker {
+                        let first_row = chunk_first_row + b * BAND_ROWS;
+                        if first_row >= total_rows {
+                            break;
+                        }
+                        let band_planes = plane_bands.each_mut().map(|(low, high)| {
+                            (
+                                low.next().unwrap_or_default(),
+                                high.next().unwrap_or_default(),
+                            )
+                        });
+                        transform_band(
+                            simd,
+                            read_rows,
+                            (first_row, band_planes),
+                            scratch,
+                            strip,
+                            level,
+                            reversible,
+                        );
+                    }
+                },
+            );
+        });
     Ok(())
 }
 
@@ -355,21 +427,18 @@ fn transform_level_parallel<S: Simd>(
                 },
             );
         });
-    let batches =
-        Mutex::new(plane[..level.height * level.stride].chunks_mut(level.stride * ROW_BATCH));
-    scratch
-        .par_chunks_mut(per_worker)
-        .with_max_len(1)
-        .for_each(|line| {
+    let rows_per_worker = level.height.div_ceil(scratch.len() / per_worker);
+    plane[..level.height * level.stride]
+        .par_chunks_mut(rows_per_worker * level.stride)
+        .zip(scratch.par_chunks_mut(per_worker))
+        .for_each(|(row_chunk, line)| {
             let line = &mut line[..level.width];
             in_simd_scope(
                 simd,
                 #[inline(always)]
                 || {
-                    while let Some(batch) = batches.lock().ok().and_then(|mut rows| rows.next()) {
-                        for row in batch.chunks_mut(level.stride) {
-                            lift_row(simd, &mut row[..level.width], line, level, reversible);
-                        }
+                    for row in row_chunk.chunks_mut(level.stride) {
+                        lift_row(simd, &mut row[..level.width], line, level, reversible);
                     }
                 },
             );

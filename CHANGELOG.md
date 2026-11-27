@@ -44,6 +44,13 @@ To add an entry, see [the changelog guide](contributor-book/documentation.md#cha
   `partial_codestream`. Code that builds the struct with a literal must set
   it, or start from `DecodeSettings::strict()` or `DecodeSettings::lenient()`.
 
+### Encoding
+
+- Single-component 1- to 16-bit grayscale CPU lossless encodes now fuse
+  sample unpacking into single-pass forward 5/3 lifting and partition
+  parallel lifting stripes without lock contention.
+  ([#346](https://github.com/frames-sg/j2k/issues/346))
+
 ### JPEG-LS
 
 - New crate `j2k-jpegls` decodes and encodes JPEG-LS (ISO/IEC 14495-1)
